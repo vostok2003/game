@@ -27,8 +27,6 @@ const minRatingBySection = {
  * Helper to get normalized userId (accept both id and _id)
  */
 function getReqUserId(req) {
-  // req.user comes from requireAuth -> jwt.verify(payload)
-  // payload uses `id` when tokens are issued in AuthController
   return req.user?.id || req.user?._id || null;
 }
 
@@ -97,17 +95,10 @@ export async function submitAttempt(req, res) {
     const userIdRaw = getReqUserId(req);
     if (!userIdRaw) return res.status(401).json({ error: "Not authenticated" });
 
-    // allow either string id or ObjectId
-    let userId = userIdRaw;
-    try {
-      // convert string to ObjectId if looks like one
-      if (typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw)) {
-        userId = new mongoose.Types.ObjectId(userIdRaw);
-      }
-    } catch (e) {
-      // keep as-is if conversion fails
-      userId = userIdRaw;
-    }
+    // Convert to ObjectId when possible
+    const userId = (typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw))
+      ? new mongoose.Types.ObjectId(userIdRaw)
+      : userIdRaw;
 
     const { date, sectionKey, answers } = req.body;
     if (!date || !sectionKey || !Array.isArray(answers)) {
@@ -162,13 +153,18 @@ export async function submitAttempt(req, res) {
     });
 
     // Update user's monthly season tally & streak:
-    const season = await Season.currentSeason();
-    const seasonKey = season ? `${season.year}-${season.month}` : null;
+    let season = await Season.currentSeason();
+    // FALLBACK: if no Season exists, use current UTC year/month so seasonPoints still increment
+    if (!season) {
+      const now = dayjs().utc();
+      season = { year: now.year(), month: now.month() + 1 }; // month() is 0-indexed
+    }
+    const seasonKey = `${season.year}-${season.month}`;
 
     const updateOps = {};
     if (practicePoints) {
       updateOps.$inc = { totalPracticePoints: practicePoints };
-      if (seasonKey) updateOps.$inc[`seasonPoints.${seasonKey}`] = practicePoints;
+      updateOps.$inc[`seasonPoints.${seasonKey}`] = practicePoints;
     }
 
     // Handle streaks: check last attempt date for this user (any section)
@@ -179,7 +175,6 @@ export async function submitAttempt(req, res) {
       if (hadYesterday) {
         updateOps.$inc = { ...(updateOps.$inc || {}), currentStreak: 1 };
       } else {
-        // Reset to 1
         updateOps.$set = { ...(updateOps.$set || {}), currentStreak: 1 };
       }
       updateOps.$set = { ...(updateOps.$set || {}), lastDailyAt: new Date() };
@@ -191,15 +186,14 @@ export async function submitAttempt(req, res) {
       if (updated?.currentStreak >= 30 && !updated.badges?.includes("streak-30")) badges.push("streak-30");
       if (updated?.currentStreak >= 100 && !updated.badges?.includes("streak-100")) badges.push("streak-100");
 
-      // Persist new badges (if any)
       if (badges.length) {
-        try {
-          await User.findByIdAndUpdate(userId, { $addToSet: { badges: { $each: badges } } });
-        } catch (e) {
+        // persist badges (non-blocking)
+        await User.findByIdAndUpdate(userId, { $addToSet: { badges: { $each: badges } } }).catch((e) => {
           console.warn("Failed to persist badges", e);
-        }
+        });
       }
 
+      // Respond with attempt + practicePoints and awarded badges
       res.json({ attempt, awardedBadges: badges, practicePoints });
     } catch (err) {
       console.warn("Daily submit: failed to update user streak/points", err && err.stack ? err.stack : err);
@@ -265,7 +259,7 @@ export async function getMyStreak(req, res) {
     const userIdRaw = getReqUserId(req);
     if (!userIdRaw) return res.status(401).json({ error: "Not authenticated" });
 
-    const userId = typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw)
+    const userId = (typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw))
       ? new mongoose.Types.ObjectId(userIdRaw)
       : userIdRaw;
 
@@ -292,7 +286,7 @@ export async function postComment(req, res) {
     const userIdRaw = getReqUserId(req);
     if (!userIdRaw) return res.status(401).json({ error: "Not authenticated" });
 
-    const userId = typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw)
+    const userId = (typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw))
       ? new mongoose.Types.ObjectId(userIdRaw)
       : userIdRaw;
 

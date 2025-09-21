@@ -1,6 +1,8 @@
 // server/models/User.js
 import mongoose from "mongoose";
 
+const SeasonPointsSchema = new mongoose.Schema({}, { strict: false, _id: false });
+
 const UserSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
@@ -21,21 +23,16 @@ const UserSchema = new mongoose.Schema(
     volatility: { type: Number, default: 0.06 },
     lastRatedAt: { type: Date, default: Date.now },
 
-    // Practice / season tracking
+    // Daily/season related fields
     totalPracticePoints: { type: Number, default: 0 },
+    // seasonPoints will be a map-like object, keys are "YYYY-M" (or similar) -> numeric points
+    seasonPoints: { type: SeasonPointsSchema, default: {} },
 
-    // Map for season points: key e.g. "2025-9" => Number
-    seasonPoints: {
-      type: Map,
-      of: Number,
-      default: {},
-    },
-
-    // Daily streak info
+    // Streak tracking
     currentStreak: { type: Number, default: 0 },
-    lastDailyAt: { type: Date, default: null },
+    lastDailyAt: { type: Date },
 
-    // Optional: badges earned by user
+    // Badges awarded to the user
     badges: { type: [String], default: [] },
   },
   { timestamps: true }
