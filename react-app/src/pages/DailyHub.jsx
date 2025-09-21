@@ -1,4 +1,4 @@
-// react-app/src/pages/DailyHub.jsx
+// src/pages/DailyHub.jsx
 import React, { useEffect, useState, useContext } from "react";
 import { UserContext } from "../context/UserContext";
 import {
@@ -8,11 +8,11 @@ import {
   fetchDailyLeaderboard,
   fetchSeasonLeaderboard,
   fetchStreak,
-  postComment,
   fetchComments,
 } from "../services/dailyService";
 import StreakCalendar from "../components/StreakCalendar";
 import Discussion from "../components/Discussion";
+import SeasonLeaderboard from "../components/SeasonLeaderboard";
 
 export default function DailyHub() {
   const { user } = useContext(UserContext);
@@ -24,19 +24,24 @@ export default function DailyHub() {
   const [seasonTop, setSeasonTop] = useState([]);
   const [streak, setStreak] = useState({ currentStreak: 0, days: [] });
   const [comments, setComments] = useState([]);
+  const [loadingDaily, setLoadingDaily] = useState(true);
 
   useEffect(() => {
     loadToday();
     loadStreak();
-    loadSeason(); // load current month
+    loadSeason();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadToday() {
+    setLoadingDaily(true);
     try {
       const res = await fetchToday();
       setToday(res);
     } catch (err) {
-      console.error(err);
+      console.error("loadToday error", err);
+    } finally {
+      setLoadingDaily(false);
     }
   }
 
@@ -45,15 +50,20 @@ export default function DailyHub() {
       const res = await fetchStreak();
       if (res) setStreak(res);
     } catch (err) {
-      // may be unauthenticated
+      // unauthenticated or error -> empty streak
       setStreak({ currentStreak: 0, days: [] });
     }
   }
 
   async function loadSeason() {
     const now = new Date();
-    const res = await fetchSeasonLeaderboard(now.getUTCFullYear(), now.getUTCMonth() + 1);
-    setSeasonTop(res.top || []);
+    try {
+      const res = await fetchSeasonLeaderboard(now.getUTCFullYear(), now.getUTCMonth() + 1);
+      setSeasonTop(res.top || []);
+    } catch (err) {
+      console.error("loadSeason error", err);
+      setSeasonTop([]);
+    }
   }
 
   async function openSection(key) {
@@ -83,17 +93,17 @@ export default function DailyHub() {
 
   async function handleSubmit() {
     if (!selected) return;
-    // We don't measure per-question time in this simple UI (could be enhanced). Use 0 for timeMs.
     const payload = { date: selected.date, sectionKey: selected.key, answers };
     try {
       const res = await submitDailyAttempt(payload);
       alert(`Submitted: practice points ${res.practicePoints || 0}. Badges: ${res.awardedBadges?.join(", ") || "None"}`);
-      // refresh leaderboard & streak
+      // refresh leaderboard & streak & season
       const lb = await fetchDailyLeaderboard(selected.date, selected.key);
       setLeaderboard(lb.top || []);
-      loadStreak();
+      await loadStreak();
+      await loadSeason();
     } catch (err) {
-      console.error(err);
+      console.error("submitDailyAttempt failed", err);
       alert(err.response?.data?.error || err.message || "Submit failed");
     }
   }
@@ -101,6 +111,8 @@ export default function DailyHub() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-100 to-purple-100 p-6">
       <div className="max-w-6xl mx-auto">
+
+        {/* Header */}
         <div className="bg-white p-6 rounded shadow mb-6 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold">Daily Practice Hub</h1>
@@ -114,14 +126,27 @@ export default function DailyHub() {
           </div>
         </div>
 
+        {/* Streak calendar (full width) */}
+        <div className="mb-6">
+          <StreakCalendar days={streak.days} yearsRange={3} cellSize={12} gap={6} />
+        </div>
+
+        {/* Season leaderboard directly under the streak calendar (full width) */}
+        <div className="mb-6">
+          <div className="bg-white p-6 rounded shadow">
+            <SeasonLeaderboard items={seasonTop} currentUserId={user?._id} currentUserName={user?.name} />
+          </div>
+        </div>
+
+        {/* Main grid: left -> Today's Sections, right -> Your Streak card */}
         <div className="grid md:grid-cols-3 gap-6">
           <div className="md:col-span-2 bg-white p-6 rounded shadow">
             <h2 className="text-lg font-semibold mb-3">Today's Sections</h2>
-            {!today ? (
+            {loadingDaily ? (
               <div>Loading...</div>
             ) : (
               <div className="grid md:grid-cols-2 gap-4">
-                {today.sections.map((s) => (
+                {today?.sections?.map((s) => (
                   <div key={s.key} className="border rounded p-4 flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between">
@@ -129,7 +154,7 @@ export default function DailyHub() {
                         <div className="text-sm text-gray-500">{s.count} problems</div>
                       </div>
                       <div className="mt-2 text-sm">
-                        {s.unlocked ? <span className="text-green-600">Unlocked</span> : <span className="text-red-600">Locked (rating {s.key === "basic" ? 0 : s.key === "intermediate" ? 1600 : s.key === "advanced" ? 1800 : 1900} required)</span>}
+                        {s.unlocked ? <span className="text-green-600">Unlocked</span> : <span className="text-red-600">Locked</span>}
                       </div>
                     </div>
                     <div className="mt-3 flex gap-2">
@@ -149,7 +174,6 @@ export default function DailyHub() {
               </div>
             )}
 
-            {/* Selected section */}
             {selected && (
               <div className="mt-6 border-t pt-4">
                 <div className="flex items-center justify-between mb-4">
@@ -196,7 +220,6 @@ export default function DailyHub() {
                 </div>
               </div>
             )}
-
           </div>
 
           <div className="bg-white p-6 rounded shadow">
@@ -205,19 +228,12 @@ export default function DailyHub() {
               <div className="text-3xl font-bold">{streak.currentStreak}</div>
               <div className="text-sm text-gray-600">days</div>
             </div>
-            <StreakCalendar days={streak.days} />
-            <div className="mt-6">
-              <h4 className="font-semibold">Season Leaderboard</h4>
-              <ol className="list-decimal pl-5 mt-2">
-                {seasonTop.length === 0 && <li className="text-gray-500">No season data yet</li>}
-                {seasonTop.map((p, i) => (
-                  <li key={i}>{p.name} — {p.seasonPoints} pts</li>
-                ))}
-              </ol>
+
+            <div className="mt-6 text-sm text-gray-500">
+              Tip: Click a day in the calendar above to inspect activity. Streaks update after you submit a daily attempt.
             </div>
           </div>
         </div>
-
       </div>
     </div>
   );

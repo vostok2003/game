@@ -61,7 +61,6 @@ export async function getSectionProblems(req, res) {
     const { date, sectionKey } = req.params;
     const daily = await DailyProblem.findOne({ date }).lean();
     if (!daily) return res.status(404).json({ error: "Daily problems not found" });
-
     const section = daily.sections.find((s) => s.key === sectionKey);
     if (!section) return res.status(404).json({ error: "Section not found" });
 
@@ -70,7 +69,6 @@ export async function getSectionProblems(req, res) {
       return res.status(403).json({ error: "Section locked" });
     }
 
-    // Return questions without answers (client user must be authenticated to attempt)
     res.json({ date, sectionKey, questions: section.problems.map((p) => p.question) });
   } catch (err) {
     console.error("Daily getSectionProblems error:", err);
@@ -85,7 +83,11 @@ export async function getSectionProblems(req, res) {
  */
 export async function submitAttempt(req, res) {
   try {
-    const userId = req.user?._id;
+    // DEBUG LOG: show incoming user & payload summary
+    const debugUserId = req.user?._id || req.user?.id || "NO_USER";
+    console.log(`[submitAttempt] called by user=${debugUserId} payloadDate=${req.body?.date} section=${req.body?.sectionKey}`);
+
+    const userId = req.user?._id || req.user?.id;
     if (!userId) return res.status(401).json({ error: "Not authenticated" });
 
     const { date, sectionKey, answers } = req.body;
@@ -141,13 +143,11 @@ export async function submitAttempt(req, res) {
     });
 
     // Update user's monthly season tally & streak:
-    // increment a practicePointsSeason field (non-breaking addition)
     const season = await Season.currentSeason();
     const seasonKey = season ? `${season.year}-${season.month}` : null;
 
     const userUpdate = {};
     if (practicePoints) {
-      // keep totalPractice optional field
       userUpdate.$inc = { totalPracticePoints: practicePoints };
       if (seasonKey) {
         userUpdate.$inc[`seasonPoints.${seasonKey}`] = practicePoints;
@@ -157,25 +157,20 @@ export async function submitAttempt(req, res) {
     // Handle streaks: check last attempt date for this user (any section)
     const yesterday = dayjs(date).utc().subtract(1, "day").format("YYYY-MM-DD");
     const hadYesterday = await DailyAttempt.findOne({ userId, date: yesterday });
-    const hadToday = true; // just submitted
     if (hadYesterday) {
-      // continue streak
       userUpdate.$inc = { ...(userUpdate.$inc || {}), currentStreak: 1 };
       userUpdate.$set = { ...(userUpdate.$set || {}), lastDailyAt: new Date() };
     } else {
-      // starting a new streak or broken streak -> recalc
       userUpdate.$set = { ...(userUpdate.$set || {}), currentStreak: 1, lastDailyAt: new Date() };
     }
 
     // atomic update
     try {
       const updated = await User.findByIdAndUpdate(userId, userUpdate, { new: true }).lean();
-      // Optionally award badges (simple thresholds)
       const badges = [];
       if (updated.currentStreak >= 7) badges.push("streak-7");
       if (updated.currentStreak >= 30) badges.push("streak-30");
       if (updated.currentStreak >= 100) badges.push("streak-100");
-      // store awarded badges as separate collection / field later — for now include in response
       res.json({ attempt, awardedBadges: badges, practicePoints });
     } catch (err) {
       console.warn("Daily submit: failed to update user streak/points", err);
@@ -189,7 +184,6 @@ export async function submitAttempt(req, res) {
 
 /**
  * GET /api/daily/leaderboard?date=YYYY-MM-DD&sectionKey=basic
- * returns top practicePoints sorted, tie-broken by lower timeTakenSeconds
  */
 export async function getDailyLeaderboard(req, res) {
   try {
@@ -214,7 +208,6 @@ export async function getDailyLeaderboard(req, res) {
 
 /**
  * GET /api/daily/season?year=YYYY&month=MM
- * returns aggregated season leaderboard
  */
 export async function getSeasonLeaderboard(req, res) {
   try {
@@ -222,7 +215,6 @@ export async function getSeasonLeaderboard(req, res) {
     const month = Number(req.query.month) || new Date().getUTCMonth() + 1;
     const seasonKey = `${year}-${month}`;
 
-    // aggregate seasonPoints from users (stored in seasonPoints map)
     const top = await User.aggregate([
       { $project: { name: 1, rating: 1, seasonPoints: { $ifNull: ["$seasonPoints." + seasonKey, 0] } } },
       { $sort: { seasonPoints: -1 } },
@@ -245,7 +237,6 @@ export async function getMyStreak(req, res) {
     if (!userId) return res.status(401).json({ error: "Not authenticated" });
     const u = await User.findById(userId).lean();
     const currentStreak = u?.currentStreak || 0;
-    // Build last 30 days map of solved/not solved
     const days = [];
     for (let i = 29; i >= 0; i--) {
       const d = dayjs().utc().subtract(i, "day").format("YYYY-MM-DD");
@@ -264,12 +255,14 @@ export async function getMyStreak(req, res) {
  */
 export async function postComment(req, res) {
   try {
+    const debugUserId = req.user?._id || req.user?.id || "NO_USER";
+    console.log(`[postComment] called by user=${debugUserId} bodyDate=${req.body?.date} section=${req.body?.sectionKey}`);
+
     const userId = req.user?._id;
     if (!userId) return res.status(401).json({ error: "Not authenticated" });
     const { date, sectionKey, text } = req.body;
     if (!date || !sectionKey || !text) return res.status(400).json({ error: "Missing fields" });
     const comment = await DailyComment.create({ date, sectionKey, userId, text });
-    // populate name
     const user = await User.findById(userId).select("name").lean();
     res.json({ comment: { _id: comment._id, date, sectionKey, text, createdAt: comment.createdAt, user: { _id: userId, name: user?.name || "Unknown" } } });
   } catch (err) {
@@ -282,6 +275,9 @@ export async function getComments(req, res) {
   try {
     const { date, sectionKey, limit = 50 } = req.query;
     if (!date || !sectionKey) return res.status(400).json({ error: "Missing fields" });
+
+    console.log(`[getComments] date=${date} section=${sectionKey} limit=${limit}`);
+
     const rows = await DailyComment.aggregate([
       { $match: { date, sectionKey } },
       { $lookup: { from: "users", localField: "userId", foreignField: "_id", as: "user" } },
