@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 
 const SeasonPointsSchema = new mongoose.Schema({}, { strict: false, _id: false });
 
+// Use Map type for seasonPoints to make nested dynamic keys robust
 const UserSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
@@ -18,15 +19,15 @@ const UserSchema = new mongoose.Schema(
     score: { type: Number, default: 0 },
 
     // Rating fields for Glicko-2 / Elo
-    rating: { type: Number, default: 1500 },
-    rd: { type: Number, default: 350 },
-    volatility: { type: Number, default: 0.06 },
+    rating: { type: Number, default: 1500 }, // player's rating
+    rd: { type: Number, default: 350 }, // rating deviation
+    volatility: { type: Number, default: 0.06 }, // glicko-2 volatility
     lastRatedAt: { type: Date, default: Date.now },
 
     // Daily/season related fields
     totalPracticePoints: { type: Number, default: 0 },
-    // seasonPoints will be a map-like object, keys are "YYYY-M" (or similar) -> numeric points
-    seasonPoints: { type: SeasonPointsSchema, default: {} },
+    // Make seasonPoints a Map<string, number>
+    seasonPoints: { type: Map, of: Number, default: {} },
 
     // Streak tracking
     currentStreak: { type: Number, default: 0 },

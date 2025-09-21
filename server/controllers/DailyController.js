@@ -23,16 +23,12 @@ const minRatingBySection = {
   elite: 1900,
 };
 
-/**
- * Helper to get normalized userId (accept both id and _id)
- */
+// Normalize userId
 function getReqUserId(req) {
   return req.user?.id || req.user?._id || null;
 }
 
-/**
- * GET /api/daily/today
- */
+// ---------------- TODAY ----------------
 export async function getToday(req, res) {
   try {
     const dateStr = dayjs().utc().format("YYYY-MM-DD");
@@ -53,20 +49,18 @@ export async function getToday(req, res) {
 
     res.json({ date: daily.date, sections });
   } catch (err) {
-    console.error("Daily getToday error:", err && err.stack ? err.stack : err);
+    console.error("Daily getToday error:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
 
-/**
- * GET /api/daily/section/:date/:sectionKey
- * require auth
- */
+// ---------------- SECTION ----------------
 export async function getSectionProblems(req, res) {
   try {
     const { date, sectionKey } = req.params;
     const daily = await DailyProblem.findOne({ date }).lean();
     if (!daily) return res.status(404).json({ error: "Daily problems not found" });
+
     const section = daily.sections.find((s) => s.key === sectionKey);
     if (!section) return res.status(404).json({ error: "Section not found" });
 
@@ -77,25 +71,17 @@ export async function getSectionProblems(req, res) {
 
     res.json({ date, sectionKey, questions: section.problems.map((p) => p.question) });
   } catch (err) {
-    console.error("Daily getSectionProblems error:", err && err.stack ? err.stack : err);
+    console.error("Daily getSectionProblems error:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
 
-/**
- * POST /api/daily/submit
- * Body: { date, sectionKey, answers: [{answer, timeMs}, ...] }
- * Auth required.
- */
+// ---------------- SUBMIT ATTEMPT ----------------
 export async function submitAttempt(req, res) {
   try {
-    const debugUserId = getReqUserId(req) || "NO_USER";
-    console.log(`[submitAttempt] called by user=${debugUserId} payloadDate=${req.body?.date} section=${req.body?.sectionKey}`);
-
     const userIdRaw = getReqUserId(req);
     if (!userIdRaw) return res.status(401).json({ error: "Not authenticated" });
 
-    // Convert to ObjectId when possible
     const userId = (typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw))
       ? new mongoose.Types.ObjectId(userIdRaw)
       : userIdRaw;
@@ -105,15 +91,16 @@ export async function submitAttempt(req, res) {
       return res.status(400).json({ error: "Invalid payload" });
     }
 
-    // One attempt per user per date+section
     const exists = await DailyAttempt.findOne({ userId, date, sectionKey });
     if (exists) return res.status(403).json({ error: "Already attempted" });
 
     const daily = await DailyProblem.findOne({ date }).lean();
     if (!daily) return res.status(404).json({ error: "Daily problems not found" });
+
     const section = daily.sections.find((s) => s.key === sectionKey);
     if (!section) return res.status(404).json({ error: "Section not found" });
 
+    // Check rating gate
     const rating = req.user?.rating ?? 0;
     if (rating < (minRatingBySection[sectionKey] ?? 0)) {
       return res.status(403).json({ error: "Section locked" });
@@ -130,7 +117,7 @@ export async function submitAttempt(req, res) {
     }
 
     const baseScore = correct * SCORE_CORRECT + wrong * SCORE_WRONG;
-    const expectedTimeMs = section.problems.length * 15000; // baseline 15s per problem
+    const expectedTimeMs = section.problems.length * 15000;
     const timeBonus = totalTimeMs < expectedTimeMs
       ? Math.round(MAX_TIME_BONUS * (1 - totalTimeMs / expectedTimeMs))
       : 0;
@@ -138,7 +125,7 @@ export async function submitAttempt(req, res) {
     const accuracy = Math.round((correct / section.problems.length) * 100);
     const practicePoints = Math.max(0, baseScore + timeBonus);
 
-    // Persist attempt
+    // Save attempt
     const attempt = await DailyAttempt.create({
       userId,
       date,
@@ -152,62 +139,50 @@ export async function submitAttempt(req, res) {
       practicePoints,
     });
 
-    // Update user's monthly season tally & streak:
+    // Season points update
     let season = await Season.currentSeason();
-    // FALLBACK: if no Season exists, use current UTC year/month so seasonPoints still increment
     if (!season) {
       const now = dayjs().utc();
-      season = { year: now.year(), month: now.month() + 1 }; // month() is 0-indexed
+      season = { year: now.year(), month: now.month() + 1 };
     }
-    const seasonKey = `${season.year}-${season.month}`;
+    const seasonKey = `${season.year}-${String(season.month).padStart(2, "0")}`;
 
     const updateOps = {};
     if (practicePoints) {
-      updateOps.$inc = { totalPracticePoints: practicePoints };
-      updateOps.$inc[`seasonPoints.${seasonKey}`] = practicePoints;
+      updateOps.$inc = {
+        totalPracticePoints: practicePoints,
+        [`seasonPoints.${seasonKey}`]: practicePoints,
+      };
     }
 
-    // Handle streaks: check last attempt date for this user (any section)
-    try {
-      const yesterday = dayjs(date).utc().subtract(1, "day").format("YYYY-MM-DD");
-      const hadYesterday = await DailyAttempt.findOne({ userId, date: yesterday });
-
-      if (hadYesterday) {
-        updateOps.$inc = { ...(updateOps.$inc || {}), currentStreak: 1 };
-      } else {
-        updateOps.$set = { ...(updateOps.$set || {}), currentStreak: 1 };
-      }
-      updateOps.$set = { ...(updateOps.$set || {}), lastDailyAt: new Date() };
-
-      const updated = await User.findByIdAndUpdate(userId, updateOps, { new: true }).lean();
-
-      const badges = [];
-      if (updated?.currentStreak >= 7 && !updated.badges?.includes("streak-7")) badges.push("streak-7");
-      if (updated?.currentStreak >= 30 && !updated.badges?.includes("streak-30")) badges.push("streak-30");
-      if (updated?.currentStreak >= 100 && !updated.badges?.includes("streak-100")) badges.push("streak-100");
-
-      if (badges.length) {
-        // persist badges (non-blocking)
-        await User.findByIdAndUpdate(userId, { $addToSet: { badges: { $each: badges } } }).catch((e) => {
-          console.warn("Failed to persist badges", e);
-        });
-      }
-
-      // Respond with attempt + practicePoints and awarded badges
-      res.json({ attempt, awardedBadges: badges, practicePoints });
-    } catch (err) {
-      console.warn("Daily submit: failed to update user streak/points", err && err.stack ? err.stack : err);
-      res.json({ attempt, practicePoints, warning: "User update failed" });
+    // Streak
+    const yesterday = dayjs(date).utc().subtract(1, "day").format("YYYY-MM-DD");
+    const hadYesterday = await DailyAttempt.findOne({ userId, date: yesterday });
+    if (hadYesterday) {
+      updateOps.$inc = { ...(updateOps.$inc || {}), currentStreak: 1 };
+    } else {
+      updateOps.$set = { ...(updateOps.$set || {}), currentStreak: 1 };
     }
+    updateOps.$set = { ...(updateOps.$set || {}), lastDailyAt: new Date() };
+
+    const updated = await User.findByIdAndUpdate(userId, updateOps, { new: true }).lean();
+
+    const badges = [];
+    if (updated?.currentStreak >= 7 && !updated.badges?.includes("streak-7")) badges.push("streak-7");
+    if (updated?.currentStreak >= 30 && !updated.badges?.includes("streak-30")) badges.push("streak-30");
+    if (updated?.currentStreak >= 100 && !updated.badges?.includes("streak-100")) badges.push("streak-100");
+    if (badges.length) {
+      await User.findByIdAndUpdate(userId, { $addToSet: { badges: { $each: badges } } });
+    }
+
+    res.json({ attempt, practicePoints, awardedBadges: badges });
   } catch (err) {
-    console.error("Daily submitAttempt error:", err && err.stack ? err.stack : err);
+    console.error("Daily submitAttempt error:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
 
-/**
- * GET /api/daily/leaderboard?date=YYYY-MM-DD&sectionKey=basic
- */
+// ---------------- DAILY LEADERBOARD ----------------
 export async function getDailyLeaderboard(req, res) {
   try {
     const { date, sectionKey } = req.query;
@@ -217,26 +192,24 @@ export async function getDailyLeaderboard(req, res) {
       { $match: { date, sectionKey } },
       { $lookup: { from: "users", localField: "userId", foreignField: "_id", as: "user" } },
       { $unwind: "$user" },
-      { $project: { practicePoints: 1, timeTakenSeconds: 1, correctCount: 1, wrongCount: 1, accuracy: 1, "user.name": 1, "user._id": 1 } },
+      { $project: { practicePoints: 1, timeTakenSeconds: 1, "user.name": 1, "user._id": 1 } },
       { $sort: { practicePoints: -1, timeTakenSeconds: 1 } },
       { $limit: limit },
     ]);
 
     res.json({ top });
   } catch (err) {
-    console.error("Daily getDailyLeaderboard error:", err && err.stack ? err.stack : err);
+    console.error("Daily getDailyLeaderboard error:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
 
-/**
- * GET /api/daily/season?year=YYYY&month=MM
- */
+// ---------------- SEASON LEADERBOARD ----------------
 export async function getSeasonLeaderboard(req, res) {
   try {
     const year = Number(req.query.year) || new Date().getUTCFullYear();
     const month = Number(req.query.month) || new Date().getUTCMonth() + 1;
-    const seasonKey = `${year}-${month}`;
+    const seasonKey = `${year}-${String(month).padStart(2, "0")}`;
 
     const top = await User.aggregate([
       { $project: { name: 1, rating: 1, seasonPoints: { $ifNull: [`$seasonPoints.${seasonKey}`, 0] } } },
@@ -246,14 +219,12 @@ export async function getSeasonLeaderboard(req, res) {
 
     res.json({ top });
   } catch (err) {
-    console.error("Daily getSeasonLeaderboard error:", err && err.stack ? err.stack : err);
+    console.error("Daily getSeasonLeaderboard error:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
 
-/**
- * GET /api/daily/streak (auth)
- */
+// ---------------- STREAK ----------------
 export async function getMyStreak(req, res) {
   try {
     const userIdRaw = getReqUserId(req);
@@ -273,14 +244,12 @@ export async function getMyStreak(req, res) {
     }
     res.json({ currentStreak, days });
   } catch (err) {
-    console.error("Daily getMyStreak error:", err && err.stack ? err.stack : err);
+    console.error("Daily getMyStreak error:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
 
-/**
- * Discussion: POST /api/daily/comment (auth)
- */
+// ---------------- COMMENTS ----------------
 export async function postComment(req, res) {
   try {
     const userIdRaw = getReqUserId(req);
@@ -292,11 +261,12 @@ export async function postComment(req, res) {
 
     const { date, sectionKey, text } = req.body;
     if (!date || !sectionKey || !text) return res.status(400).json({ error: "Missing fields" });
+
     const comment = await DailyComment.create({ date, sectionKey, userId, text });
     const user = await User.findById(userId).select("name").lean();
     res.json({ comment: { _id: comment._id, date, sectionKey, text, createdAt: comment.createdAt, user: { _id: userId, name: user?.name || "Unknown" } } });
   } catch (err) {
-    console.error("Daily postComment error:", err && err.stack ? err.stack : err);
+    console.error("Daily postComment error:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -305,8 +275,6 @@ export async function getComments(req, res) {
   try {
     const { date, sectionKey, limit = 50 } = req.query;
     if (!date || !sectionKey) return res.status(400).json({ error: "Missing fields" });
-
-    console.log(`[getComments] date=${date} section=${sectionKey} limit=${limit}`);
 
     const rows = await DailyComment.aggregate([
       { $match: { date, sectionKey } },
@@ -318,7 +286,7 @@ export async function getComments(req, res) {
     ]);
     res.json({ comments: rows });
   } catch (err) {
-    console.error("Daily getComments error:", err && err.stack ? err.stack : err);
+    console.error("Daily getComments error:", err);
     res.status(500).json({ error: "Server error" });
   }
 }

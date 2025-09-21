@@ -14,6 +14,9 @@ import StreakCalendar from "../components/StreakCalendar";
 import Discussion from "../components/Discussion";
 import SeasonLeaderboard from "../components/SeasonLeaderboard";
 import { toast } from "react-toastify";
+import getSocket from "../socket";
+
+const socket = getSocket();
 
 export default function DailyHub() {
   const { user } = useContext(UserContext);
@@ -34,6 +37,17 @@ export default function DailyHub() {
     loadToday();
     loadStreak();
     loadSeason();
+
+    // listen for optional real-time season updates (backend must emit "seasonUpdate")
+    function onSeasonUpdate(payload) {
+      // server can optionally send { year, month } or nothing
+      loadSeason();
+    }
+    socket.on("seasonUpdate", onSeasonUpdate);
+
+    return () => {
+      socket.off("seasonUpdate", onSeasonUpdate);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -66,6 +80,7 @@ export default function DailyHub() {
   async function loadSeason() {
     const now = new Date();
     try {
+      // fetchSeasonLeaderboard already adds cache-buster param
       const res = await fetchSeasonLeaderboard(now.getUTCFullYear(), now.getUTCMonth() + 1);
       setSeasonTop(res.top || []);
     } catch (err) {
@@ -112,9 +127,13 @@ export default function DailyHub() {
       // refresh right-side info
       const lb = await fetchDailyLeaderboard(selected.date, selected.key);
       setLeaderboard(lb.top || []);
+
+      // critical: reload streak and season (season fetch includes cache-buster)
       await loadStreak();
       await loadSeason();
-      // optionally refresh comments
+
+      // Additionally, if you want immediate UI reflect without roundtrip, you could
+      // optimistically update seasonTop here (not done by default).
     } catch (err) {
       console.error("submitDailyAttempt failed", err);
       const msg = err.response?.data?.error || err.message || "Submit failed";

@@ -1,6 +1,7 @@
-// react-app/src/services/dailyService.js
+// client/src/services/dailyService.js
 import api from "../utils/api";
 
+/* daily */
 export async function fetchToday() {
   const res = await api.get("/daily/today");
   return res.data;
@@ -21,8 +22,15 @@ export async function fetchDailyLeaderboard(date, sectionKey, limit = 20) {
   return res.data;
 }
 
+/**
+ * fetchSeasonLeaderboard
+ * - Adds a small cache-busting `_ts` param to avoid stale 304 caching
+ * - Keeps same signature: (year, month)
+ */
 export async function fetchSeasonLeaderboard(year, month) {
-  const res = await api.get("/daily/season", { params: { year, month } });
+  const res = await api.get("/daily/season", {
+    params: { year, month, _ts: Date.now() },
+  });
   return res.data;
 }
 
