@@ -6,244 +6,258 @@ dayjs.extend(utc);
 
 /**
  * StreakCalendar
+ *
+ * - Renders months as separate blocks (so days for a month are always under that month).
+ * - Adds visible horizontal gap between months (monthGapPx).
+ * - Allows selecting multiple years; by default shows last `yearsCount` years (including current).
+ *
  * Props:
  *  - days: [{ date: "YYYY-MM-DD", solved: true/false }]
- *  - defaultYear: number|null
- *  - cellSize, gap (appearance)
- *  - onDayClick(dateIso, info) -> called when user clicks a day cell
- *
- * Behavior:
- *  - auto-derives available years from days array (if present)
- *  - displays a single year at a time (selectable)
- *  - emits onDayClick for clicks on in-range days
+ *  - yearsCount: number (default 3) -> number of recent years to show in selector
+ *  - cellSize: px per day square (default 14)
+ *  - cellGap: px gap between day cells within a week (default 6)
+ *  - monthGapPx: px extra gap between months (default 18)
+ *  - onDayClick(dateIso, meta) optional
  */
 
-const DEFAULT_CELL = 12;
+const DEFAULT_CELL = 14;
 const DEFAULT_GAP = 6;
-const COLOR_BG = "#ebedf0";
-const COLOR_SOLVED = "#2f9e44";
+const DEFAULT_MONTH_GAP = 18;
 
-function isoDate(d) {
-  return dayjs(d).format("YYYY-MM-DD");
+function iso(d) {
+  return dayjs.utc(d).format("YYYY-MM-DD");
 }
 
 function buildLookup(days = []) {
   const map = new Map();
   for (const it of days || []) {
     if (!it || !it.date) continue;
-    map.set(isoDate(it.date), !!it.solved);
+    map.set(iso(it.date), !!it.solved);
   }
   return map;
 }
 
-function buildAvailableYears(days = []) {
-  const years = new Set();
-  for (const it of days || []) {
-    try {
-      const y = dayjs(it.date).utc().year();
-      if (!Number.isNaN(y)) years.add(y);
-    } catch {}
-  }
-  const arr = Array.from(years).sort((a, b) => b - a);
-  return arr;
-}
-
-function buildWeeksForYear(year, { daysLookup }) {
-  const startOfYear = dayjs.utc(`${year}-01-01`).startOf("day");
-  const endOfYearRaw = dayjs.utc(`${year}-12-31`).endOf("day");
-  const today = dayjs.utc().startOf("day");
-
-  let endOfYear;
-  if (year === today.year()) {
-    endOfYear = endOfYearRaw.isBefore(today) ? endOfYearRaw : today;
-  } else {
-    endOfYear = endOfYearRaw;
-  }
-
-  const start = startOfYear.startOf("week"); // Sunday aligned
-
-  const weeks = [];
-  let cursor = start;
-  while (cursor.isBefore(endOfYear.add(1, "day"))) {
-    const days = [];
-    for (let dow = 0; dow < 7; dow++) {
-      const d = cursor.add(dow, "day");
-      const iso = d.format("YYYY-MM-DD");
-      const inRange = !d.isBefore(startOfYear) && !d.isAfter(endOfYear);
-      days.push({
-        iso,
-        solved: !!daysLookup.get(iso),
-        inRange,
-        dayjsObj: d,
-      });
+/** Return array of months for a year [1..12] each contains weeks (each week is 7 day objects) */
+function buildYearMonths(year, daysLookup) {
+  // For each month, build weeks that cover that month (start from the Sunday on/before month start)
+  const months = [];
+  for (let m = 0; m < 12; m++) {
+    const startOfMonth = dayjs.utc(`${year}-${String(m + 1).padStart(2, "0")}-01`).startOf("day");
+    const endOfMonth = startOfMonth.endOf("month");
+    // week grid starts at Sunday on or before startOfMonth
+    const gridStart = startOfMonth.startOf("week");
+    // grid ends at Saturday on or after endOfMonth
+    const gridEnd = endOfMonth.endOf("week");
+    const weeks = [];
+    let cursor = gridStart;
+    while (cursor.isBefore(gridEnd.add(1, "day"))) {
+      const daysRow = [];
+      for (let dow = 0; dow < 7; dow++) {
+        const d = cursor.add(dow, "day");
+        const inMonth = d.isSame(startOfMonth, "month");
+        daysRow.push({
+          iso: d.format("YYYY-MM-DD"),
+          solved: !!daysLookup.get(d.format("YYYY-MM-DD")),
+          inMonth,
+          dayjsObj: d,
+        });
+      }
+      weeks.push(daysRow);
+      cursor = cursor.add(7, "day");
+      if (weeks.length > 10_000) break; // safety
     }
-    weeks.push({ startIso: cursor.format("YYYY-MM-DD"), days });
-    cursor = cursor.add(7, "day");
-    if (weeks.length > 1100) break;
+    months.push({
+      monthIndex: m,
+      monthLabel: startOfMonth.format("MMM"),
+      weeks,
+      startOfMonth,
+      endOfMonth,
+    });
   }
-
-  return { weeks, startOfYear, endOfYear };
-}
-
-function computeMonthLabels(weeks) {
-  const map = new Map();
-  weeks.forEach((w, idx) => {
-    for (let r = 0; r < 7; r++) {
-      const d = w.days[r];
-      if (!d.inRange) continue;
-      const monthKey = d.dayjsObj.format("YYYY-MM");
-      if (!map.has(monthKey)) map.set(monthKey, idx);
-      break;
-    }
-  });
-  return map;
+  return months;
 }
 
 export default function StreakCalendar({
   days = [],
-  defaultYear = null,
+  yearsCount = 3,
   cellSize = DEFAULT_CELL,
-  gap = DEFAULT_GAP,
+  cellGap = DEFAULT_GAP,
+  monthGapPx = DEFAULT_MONTH_GAP,
   onDayClick = null,
 }) {
   const daysLookup = useMemo(() => buildLookup(days), [days]);
 
+  // available years default: current and previous (yearsCount - 1)
+  const currentYear = dayjs.utc().year();
   const availableYears = useMemo(() => {
-    const yrs = buildAvailableYears(days);
-    // always include current year even if no days provided
-    const cy = dayjs.utc().year();
-    if (!yrs.includes(cy)) yrs.unshift(cy);
-    return yrs.length ? yrs : [cy];
-  }, [days]);
+    const arr = [];
+    for (let i = 0; i < yearsCount; i++) arr.push(currentYear - i);
+    return arr;
+  }, [currentYear, yearsCount]);
 
-  const [selectedYear, setSelectedYear] = useState(() => {
-    if (defaultYear && availableYears.includes(defaultYear)) return defaultYear;
-    return availableYears[0];
-  });
+  // selection state: multi-mode toggle + selected years
+  const [multiMode, setMultiMode] = useState(false);
+  const [selectedYears, setSelectedYears] = useState([availableYears[0]]);
 
-  // ensure if availableYears changes we keep selection valid
+  // ensure selection remains valid if years list changes
   React.useEffect(() => {
-    if (!availableYears.includes(selectedYear)) {
-      setSelectedYear(availableYears[0]);
-    }
-  }, [availableYears]); // eslint-disable-line
+    setSelectedYears((prev) => {
+      const valid = prev.filter((y) => availableYears.includes(y));
+      return valid.length ? valid : [availableYears[0]];
+    });
+  }, [availableYears]);
 
-  const { weeks } = useMemo(
-    () => buildWeeksForYear(selectedYear, { daysLookup }),
-    [selectedYear, daysLookup]
-  );
-
-  const monthMap = useMemo(() => computeMonthLabels(weeks), [weeks]);
-
-  // layout measuring
+  // layout
   const containerRef = useRef(null);
-  const [containerWidth, setContainerWidth] = useState(0);
-
+  const [containerWidth, setContainerWidth] = useState(1200);
   useLayoutEffect(() => {
     function measure() {
-      const w = containerRef.current ? containerRef.current.clientWidth : 0;
-      setContainerWidth(w);
+      if (!containerRef.current) return;
+      setContainerWidth(containerRef.current.clientWidth);
     }
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
   }, []);
 
-  const colWidth = cellSize + gap;
-  const approxGridWidth = weeks.length * colWidth + 12;
-  const stretch = containerWidth > approxGridWidth ? (containerWidth - 12) / Math.max(weeks.length, 1) : null;
-  const effectiveColWidth = stretch ? Math.max(colWidth, stretch) : colWidth;
-  const effectiveCellSize = stretch ? Math.max(cellSize, effectiveColWidth - gap) : cellSize;
-  const padding = 6;
+  // toggle year selection
+  function toggleYear(y) {
+    setSelectedYears((prev) => {
+      if (prev.includes(y)) return prev.filter((x) => x !== y);
+      return multiMode ? [...prev, y].sort((a, b) => b - a) : [y];
+    });
+  }
 
-  const colLeft = (colIdx) => Math.round(padding + colIdx * effectiveColWidth);
+  function selectAll() {
+    setSelectedYears([...availableYears]);
+  }
+  function clearAll() {
+    setSelectedYears([]);
+  }
 
-  const cellStyle = (d) => ({
-    width: effectiveCellSize,
-    height: effectiveCellSize,
-    borderRadius: 4,
-    background: d.inRange ? (d.solved ? COLOR_SOLVED : COLOR_BG) : "#f5f7f9",
-    opacity: d.inRange ? 1 : 0.22,
-    border: "1px solid rgba(0,0,0,0.04)",
-    boxSizing: "border-box",
-    cursor: d.inRange ? "pointer" : "default",
-    transition: "transform .08s ease",
-  });
+  // Render one month block (vertical stack of day cells per week)
+  function renderMonthBlock(month, keyPrefix) {
+    // number of weeks in this month block (weeks array length)
+    const weeks = month.weeks;
+    const weeksCount = weeks.length;
+    const colWidth = cellSize; // each day square width
+    const columnGap = cellGap;
+    const blockWidth = weeksCount * (colWidth + columnGap);
 
-  const handleClick = (d) => {
-    if (!d.inRange) return;
-    if (typeof onDayClick === "function") {
-      onDayClick(d.iso, { date: d.iso, solved: d.solved, inRange: d.inRange });
-    }
-  };
+    return (
+      <div
+        key={keyPrefix + "-m" + month.monthIndex}
+        className="inline-block align-top"
+        style={{ marginRight: monthGapPx, minWidth: Math.min(blockWidth + 8, containerWidth * 0.9) }}
+      >
+        <div className="text-center mb-2 text-sm font-medium text-slate-700">{month.monthLabel}</div>
 
-  return (
-    <div ref={containerRef} className="w-full">
-      <div className="bg-white p-4 rounded shadow-sm">
-        <div className="flex items-center justify-between mb-3 gap-4">
-          <div>
-            <div className="text-lg font-semibold">Activity</div>
-            <div className="text-xs text-gray-500">Choose year and explore day-by-day activity</div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="text-xs text-gray-500 mr-2">Year</div>
-            <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} className="px-3 py-1 border rounded bg-white text-sm">
-              {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </div>
-        </div>
-
-        {/* Month labels */}
-        <div style={{ position: "relative", marginBottom: 8 }}>
-          <div style={{ height: effectiveCellSize + 8 }} />
-          <div style={{ position: "absolute", left: effectiveCellSize + gap, right: 12, top: 0 }}>
-            <div style={{ position: "relative", height: 24 }}>
-              {Array.from(monthMap.entries()).map(([monthKey, colIdx]) => {
-                const left = colLeft(colIdx);
-                const label = dayjs.utc(monthKey + "-01").format("MMM");
+        <div style={{ display: "flex", gap: columnGap, alignItems: "flex-start", overflow: "visible", padding: 4 }}>
+          {weeks.map((week, wi) => (
+            <div key={wi} style={{ display: "flex", flexDirection: "column", gap: columnGap }}>
+              {week.map((d, di) => {
+                const inMonth = d.inMonth;
+                const bg = inMonth ? (d.solved ? "#16a34a" : "#ebedf0") : "#f8fafc";
+                const opacity = inMonth ? 1 : 0.28;
                 return (
-                  <div key={monthKey} style={{ position: "absolute", left, transform: "translateX(-6px)", fontSize: 13, fontWeight: 600 }}>
-                    {label}
-                  </div>
+                  <div
+                    key={di}
+                    title={`${d.dayjsObj.format("ddd, MMM D, YYYY")} — ${inMonth ? (d.solved ? "Solved" : "Missed") : "Outside month"}`}
+                    onClick={() => { if (inMonth && typeof onDayClick === "function") onDayClick(d.iso, { iso: d.iso, solved: d.solved }); }}
+                    style={{
+                      width: cellSize,
+                      height: cellSize,
+                      borderRadius: 4,
+                      background: bg,
+                      opacity,
+                      boxSizing: "border-box",
+                      border: "1px solid rgba(0,0,0,0.04)",
+                      cursor: inMonth ? "pointer" : "default",
+                    }}
+                  />
                 );
               })}
             </div>
-          </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Build months for a given year
+  function renderYear(year) {
+    const months = buildYearMonths(year, daysLookup);
+    return (
+      <div key={"year-" + year} className="mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-semibold">Activity — {year}</div>
+          <div className="text-xs text-slate-500">Each small square = one day</div>
         </div>
 
-        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-          {/* weekday labels */}
-          <div style={{ display: "flex", flexDirection: "column", gap }}>
-            <div style={{ height: effectiveCellSize }} />
-            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-              <div key={d} style={{ height: effectiveCellSize, fontSize: 12, color: "#666" }}>{d}</div>
-            ))}
+        <div style={{ overflowX: "auto", padding: 8, borderRadius: 8, border: "1px solid rgba(15,23,42,0.04)", background: "#fff" }}>
+          <div style={{ display: "flex", gap: monthGapPx, alignItems: "flex-start", paddingBottom: 6 }}>
+            {months.map((m) => renderMonthBlock(m, String(year)))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={containerRef}>
+      <div className="bg-white p-4 rounded shadow mb-4">
+        <div className="flex items-start justify-between gap-4 mb-3">
+          <div>
+            <h3 className="text-lg font-semibold">Activity</h3>
+            <div className="text-sm text-slate-500">Each square = one day. Weeks flow top → bottom inside each month block.</div>
           </div>
 
-          {/* weeks */}
-          <div style={{ overflowX: "auto", width: "100%", paddingBottom: 6 }}>
-            <div style={{ display: "inline-flex", gap, padding: padding, minWidth: Math.max(approxGridWidth, containerWidth - 24), alignItems: "flex-start" }}>
-              {weeks.map((w) => (
-                <div key={w.startIso} style={{ display: "flex", flexDirection: "column", gap }}>
-                  {w.days.map((d) => (
-                    <div
-                      key={d.iso}
-                      title={`${d.dayjsObj.format("ddd, MMM D, YYYY")} — ${d.inRange ? (d.solved ? "Solved" : "Missed") : "Out of range"}`}
-                      onClick={() => handleClick(d)}
-                      onMouseDown={(e) => { if (d.inRange) e.currentTarget.style.transform = "scale(0.98)"; }}
-                      onMouseUp={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
-                      style={cellStyle(d)}
-                    />
-                  ))}
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={multiMode} onChange={(e) => setMultiMode(e.target.checked)} />
+              <span>Multi-year</span>
+            </label>
+
+            <div className="border rounded px-2 py-1 bg-white">
+              {!multiMode ? (
+                <select
+                  value={selectedYears[0] ?? ""}
+                  onChange={(e) => setSelectedYears([Number(e.target.value)])}
+                  className="text-sm"
+                >
+                  {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
+                </select>
+              ) : (
+                <div style={{ minWidth: 180 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div className="text-xs text-slate-600">Years</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={selectAll} className="text-xs text-slate-600 hover:underline">All</button>
+                      <button onClick={clearAll} className="text-xs text-slate-600 hover:underline">Clear</button>
+                    </div>
+                  </div>
+                  <div style={{ maxHeight: 140, overflowY: "auto" }}>
+                    {availableYears.map((y) => (
+                      <label key={y} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0" }}>
+                        <input type="checkbox" checked={selectedYears.includes(y)} onChange={() => toggleYear(y)} />
+                        <span className="text-sm">{y}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              ))}
+              )}
             </div>
+
           </div>
         </div>
 
-        <div className="mt-2 text-xs text-gray-500">Hover or click a day to see details. Use horizontal scroll to view all weeks.</div>
+        {selectedYears.length === 0 ? (
+          <div className="p-3 rounded border border-dashed text-sm text-slate-500">No year selected</div>
+        ) : (
+          <div>
+            {selectedYears.slice().sort((a, b) => b - a).map((y) => renderYear(y))}
+          </div>
+        )}
       </div>
     </div>
   );

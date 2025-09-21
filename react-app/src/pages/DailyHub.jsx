@@ -146,8 +146,15 @@ export default function DailyHub() {
 
         {/* Streak calendar (full width) */}
         <div className="mb-6">
-          <StreakCalendar days={streak.days} defaultYear={new Date().getUTCFullYear()} cellSize={12} gap={6} onDayClick={handleCalendarClick} />
-        </div>
+         <StreakCalendar
+  days={streak.days}
+  yearsCount={3}
+  cellSize={14}
+  cellGap={6}
+  monthGapPx={18}
+  onDayClick={(iso, meta) => { console.log("Day clicked", iso, meta); /* optionally load comments/attempts */ }}
+/>
+     </div>
 
         {/* Season leaderboard directly under the streak calendar (full width) */}
         <div className="mb-6">
