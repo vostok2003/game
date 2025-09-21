@@ -24,6 +24,15 @@ const minRatingBySection = {
 };
 
 /**
+ * Helper to get normalized userId (accept both id and _id)
+ */
+function getReqUserId(req) {
+  // req.user comes from requireAuth -> jwt.verify(payload)
+  // payload uses `id` when tokens are issued in AuthController
+  return req.user?.id || req.user?._id || null;
+}
+
+/**
  * GET /api/daily/today
  */
 export async function getToday(req, res) {
@@ -82,17 +91,22 @@ export async function getSectionProblems(req, res) {
  */
 export async function submitAttempt(req, res) {
   try {
-    const debugUserId = req.user?._id || req.user?.id || "NO_USER";
+    const debugUserId = getReqUserId(req) || "NO_USER";
     console.log(`[submitAttempt] called by user=${debugUserId} payloadDate=${req.body?.date} section=${req.body?.sectionKey}`);
 
-    const userIdRaw = req.user?._id || req.user?.id;
+    const userIdRaw = getReqUserId(req);
     if (!userIdRaw) return res.status(401).json({ error: "Not authenticated" });
 
+    // allow either string id or ObjectId
     let userId = userIdRaw;
     try {
-      userId = typeof userIdRaw === "string" ? new mongoose.Types.ObjectId(userIdRaw) : userIdRaw;
+      // convert string to ObjectId if looks like one
+      if (typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw)) {
+        userId = new mongoose.Types.ObjectId(userIdRaw);
+      }
     } catch (e) {
-      console.warn("[submitAttempt] could not convert userId to ObjectId, using raw value", e);
+      // keep as-is if conversion fails
+      userId = userIdRaw;
     }
 
     const { date, sectionKey, answers } = req.body;
@@ -177,7 +191,7 @@ export async function submitAttempt(req, res) {
       if (updated?.currentStreak >= 30 && !updated.badges?.includes("streak-30")) badges.push("streak-30");
       if (updated?.currentStreak >= 100 && !updated.badges?.includes("streak-100")) badges.push("streak-100");
 
-      // Optionally persist badges if any (keep it simple: only push new badges)
+      // Persist new badges (if any)
       if (badges.length) {
         try {
           await User.findByIdAndUpdate(userId, { $addToSet: { badges: { $each: badges } } });
@@ -248,8 +262,13 @@ export async function getSeasonLeaderboard(req, res) {
  */
 export async function getMyStreak(req, res) {
   try {
-    const userId = req.user?._id;
-    if (!userId) return res.status(401).json({ error: "Not authenticated" });
+    const userIdRaw = getReqUserId(req);
+    if (!userIdRaw) return res.status(401).json({ error: "Not authenticated" });
+
+    const userId = typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw)
+      ? new mongoose.Types.ObjectId(userIdRaw)
+      : userIdRaw;
+
     const u = await User.findById(userId).lean();
     const currentStreak = u?.currentStreak || 0;
     const days = [];
@@ -266,12 +285,17 @@ export async function getMyStreak(req, res) {
 }
 
 /**
- * Discussion: GET/POST comments
+ * Discussion: POST /api/daily/comment (auth)
  */
 export async function postComment(req, res) {
   try {
-    const userId = req.user?._id;
-    if (!userId) return res.status(401).json({ error: "Not authenticated" });
+    const userIdRaw = getReqUserId(req);
+    if (!userIdRaw) return res.status(401).json({ error: "Not authenticated" });
+
+    const userId = typeof userIdRaw === "string" && mongoose.Types.ObjectId.isValid(userIdRaw)
+      ? new mongoose.Types.ObjectId(userIdRaw)
+      : userIdRaw;
+
     const { date, sectionKey, text } = req.body;
     if (!date || !sectionKey || !text) return res.status(400).json({ error: "Missing fields" });
     const comment = await DailyComment.create({ date, sectionKey, userId, text });
