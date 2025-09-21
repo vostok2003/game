@@ -1,0 +1,183 @@
+// src/App.jsx
+import React, { useEffect, useState } from "react";
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import Home from "./pages/Home";
+import WaitingRoom from "./pages/WaitingRoom";
+import Game from "./pages/Game";
+import Results from "./pages/Results";
+import Login from "./pages/Login";
+import Signup from "./pages/Signup";
+import SinglePlayerGame from "./pages/SinglePlayerGame";
+import AuthSuccess from "./pages/AuthSuccess";
+import { UserProvider } from "./context/UserContext";
+import DailyHub from "./pages/DailyHub";
+import api from "./utils/api";
+
+/**
+ * RequireAuth
+ * - If no token => immediate redirect to /login
+ * - If token exists and localStorage has user => allow immediately
+ * - If token exists but user missing => verify by calling /me and show a small loader while verifying
+ */
+function RequireAuth({ children }) {
+  const token = localStorage.getItem("token");
+  const localUser = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("user"));
+    } catch {
+      return null;
+    }
+  })();
+
+  const [loading, setLoading] = useState(false);
+  const [valid, setValid] = useState(() => {
+    if (!token) return false;
+    // if token exists and user exists, assume valid until proven otherwise
+    if (token && localUser) return true;
+    return null; // unknown -> verify
+  });
+
+  useEffect(() => {
+    let mounted = true;
+
+    // If no token -> not authenticated
+    if (!token) {
+      setValid(false);
+      return;
+    }
+
+    // If we already have a user in localStorage, assume OK
+    if (localUser) {
+      setValid(true);
+      return;
+    }
+
+    // Token exists but user missing -> verify token by calling /me
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await api.get("/me");
+        if (!mounted) return;
+        if (res?.data?.user) {
+          // persist user for rest of app
+          try {
+            localStorage.setItem("user", JSON.stringify(res.data.user));
+          } catch (e) {
+            // ignore storage errors
+          }
+          setValid(true);
+        } else {
+          setValid(false);
+        }
+      } catch (err) {
+        // treat any error as unauthenticated
+        setValid(false);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  if (valid === true) return children;
+  if (loading) return <div className="min-h-screen flex items-center justify-center">Checking session…</div>;
+  return <Navigate to="/login" />;
+}
+
+function LogoutButton() {
+  const navigate = useNavigate();
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    // reload to ensure socket picks up change (you can replace with socket re-init later)
+    navigate("/login");
+    window.location.reload();
+  };
+  return (
+    <button
+      className="absolute top-4 right-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 transition"
+      onClick={handleLogout}
+    >
+      Logout
+    </button>
+  );
+}
+
+function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/signup" element={<Signup />} />
+      <Route path="/auth/success" element={<AuthSuccess />} />
+
+      <Route
+        path="/"
+        element={
+          <RequireAuth>
+            <LogoutButton />
+            <Home />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/waiting"
+        element={
+          <RequireAuth>
+            <LogoutButton />
+            <WaitingRoom />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/game"
+        element={
+          <RequireAuth>
+            <LogoutButton />
+            <Game />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/results"
+        element={
+          <RequireAuth>
+            <LogoutButton />
+            <Results />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/singleplayer"
+        element={
+          <RequireAuth>
+            <LogoutButton />
+            <SinglePlayerGame />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/daily"
+        element={
+          <RequireAuth>
+            <LogoutButton />
+            <DailyHub />
+          </RequireAuth>
+        }
+      />
+    </Routes>
+  );
+}
+
+export default function App() {
+  return (
+    <UserProvider>
+      <Router>
+        <AppRoutes />
+      </Router>
+    </UserProvider>
+  );
+}

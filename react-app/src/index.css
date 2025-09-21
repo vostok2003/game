@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+/* react-app/src/index.css (append) */
+.streak-day {
+  width: 2rem;
+  height: 2rem;
+}
+
+/* optional small tweak to keep cards same min-height as header */
+.daily-practice-card { min-height: 180px; }
+
