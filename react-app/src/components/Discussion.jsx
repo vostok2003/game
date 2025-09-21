@@ -1,24 +1,36 @@
-// react-app/src/components/Discussion.jsx
+// client/src/components/Discussion.jsx
 import React, { useState } from "react";
 import { postComment } from "../services/dailyService";
+import { toast } from "react-toastify";
 
 export default function Discussion({ date, sectionKey, comments = [], onPosted }) {
   const [text, setText] = useState("");
-  const user = JSON.parse(localStorage.getItem("user"));
+  const user = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("user"));
+    } catch (e) {
+      return null;
+    }
+  })();
 
   const submit = async () => {
     if (!user) {
-      alert("Please login to post comments.");
+      toast.error("Please login to post comments.");
       return;
     }
-    if (!text.trim()) return;
+    if (!text.trim()) {
+      toast.error("Comment can't be empty.");
+      return;
+    }
     try {
-      await postComment({ date, sectionKey, text });
+      const res = await postComment({ date, sectionKey, text });
       setText("");
+      toast.success("Comment posted");
       if (onPosted) onPosted();
     } catch (err) {
-      console.error(err);
-      alert("Failed to post comment");
+      console.error("postComment failed", err);
+      const msg = err.response?.data?.error || err.message || "Failed to post comment";
+      toast.error(msg);
     }
   };
 

@@ -15,12 +15,28 @@ const UserSchema = new mongoose.Schema(
 
     score: { type: Number, default: 0 },
 
-    // Rating fields for Glicko-2
-    rating: { type: Number, default: 1500 }, // player's rating
-    rd: { type: Number, default: 350 }, // rating deviation
-    volatility: { type: Number, default: 0.06 }, // glicko-2 volatility
+    // Rating fields for Glicko-2 / Elo
+    rating: { type: Number, default: 1500 },
+    rd: { type: Number, default: 350 },
+    volatility: { type: Number, default: 0.06 },
     lastRatedAt: { type: Date, default: Date.now },
-    
+
+    // Practice / season tracking
+    totalPracticePoints: { type: Number, default: 0 },
+
+    // Map for season points: key e.g. "2025-9" => Number
+    seasonPoints: {
+      type: Map,
+      of: Number,
+      default: {},
+    },
+
+    // Daily streak info
+    currentStreak: { type: Number, default: 0 },
+    lastDailyAt: { type: Date, default: null },
+
+    // Optional: badges earned by user
+    badges: { type: [String], default: [] },
   },
   { timestamps: true }
 );

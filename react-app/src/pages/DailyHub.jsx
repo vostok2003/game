@@ -1,4 +1,4 @@
-// src/pages/DailyHub.jsx
+// client/src/pages/DailyHub.jsx
 import React, { useEffect, useState, useContext } from "react";
 import { UserContext } from "../context/UserContext";
 import {
@@ -13,6 +13,7 @@ import {
 import StreakCalendar from "../components/StreakCalendar";
 import Discussion from "../components/Discussion";
 import SeasonLeaderboard from "../components/SeasonLeaderboard";
+import { toast } from "react-toastify";
 
 export default function DailyHub() {
   const { user } = useContext(UserContext);
@@ -50,9 +51,14 @@ export default function DailyHub() {
 
   async function loadStreak() {
     try {
+      if (!user) {
+        setStreak({ currentStreak: 0, days: [] });
+        return;
+      }
       const res = await fetchStreak();
       if (res) setStreak(res);
     } catch (err) {
+      console.error("Failed to fetch streak", err);
       setStreak({ currentStreak: 0, days: [] });
     }
   }
@@ -98,14 +104,22 @@ export default function DailyHub() {
     const payload = { date: selected.date, sectionKey: selected.key, answers };
     try {
       const res = await submitDailyAttempt(payload);
-      alert(`Submitted: practice points ${res.practicePoints || 0}. Badges: ${res.awardedBadges?.join(", ") || "None"}`);
+      toast.success(`Submitted — +${res.practicePoints || 0} practice points`);
+      if (res.awardedBadges && res.awardedBadges.length) {
+        toast.info(`Badges: ${res.awardedBadges.join(", ")}`, { autoClose: 4000 });
+      }
+
+      // refresh right-side info
       const lb = await fetchDailyLeaderboard(selected.date, selected.key);
       setLeaderboard(lb.top || []);
       await loadStreak();
       await loadSeason();
+      // optionally refresh comments
     } catch (err) {
       console.error("submitDailyAttempt failed", err);
-      alert(err.response?.data?.error || err.message || "Submit failed");
+      const msg = err.response?.data?.error || err.message || "Submit failed";
+      toast.error(msg);
+      alert(msg);
     }
   }
 
@@ -114,7 +128,6 @@ export default function DailyHub() {
     setPickedDay(info);
     // Optionally fetch attempts/comments for that date to show details (non-blocking)
     try {
-      // attempt to fetch daily leaderboard for the same section if selected or use 'basic'
       if (selected) {
         const lb = await fetchDailyLeaderboard(dateIso, selected.key);
         setLeaderboard(lb.top || []);
@@ -147,13 +160,13 @@ export default function DailyHub() {
         {/* Streak calendar (full width) */}
         <div className="mb-6">
          <StreakCalendar
-  days={streak.days}
-  yearsCount={3}
-  cellSize={14}
-  cellGap={6}
-  monthGapPx={18}
-  onDayClick={(iso, meta) => { console.log("Day clicked", iso, meta); /* optionally load comments/attempts */ }}
-/>
+          days={streak.days}
+          yearsCount={3}
+          cellSize={14}
+          cellGap={6}
+          monthGapPx={18}
+          onDayClick={(iso, meta) => { console.log("Day clicked", iso, meta); handleCalendarClick(iso, meta); }}
+          />
      </div>
 
         {/* Season leaderboard directly under the streak calendar (full width) */}

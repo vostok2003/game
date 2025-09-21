@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import Home from "./pages/Home";
 import WaitingRoom from "./pages/WaitingRoom";
@@ -12,6 +12,8 @@ import AuthSuccess from "./pages/AuthSuccess";
 import { UserProvider } from "./context/UserContext";
 import DailyHub from "./pages/DailyHub";
 import api from "./utils/api";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 /**
  * RequireAuth
@@ -29,48 +31,41 @@ function RequireAuth({ children }) {
     }
   })();
 
-  const [loading, setLoading] = useState(false);
-  const [valid, setValid] = useState(() => {
+  const [loading, setLoading] = React.useState(false);
+  const [valid, setValid] = React.useState(() => {
     if (!token) return false;
     // if token exists and user exists, assume valid until proven otherwise
     if (token && localUser) return true;
     return null; // unknown -> verify
   });
 
-  useEffect(() => {
+  React.useEffect(() => {
     let mounted = true;
 
-    // If no token -> not authenticated
     if (!token) {
       setValid(false);
       return;
     }
 
-    // If we already have a user in localStorage, assume OK
     if (localUser) {
       setValid(true);
       return;
     }
 
-    // Token exists but user missing -> verify token by calling /me
     setLoading(true);
     (async () => {
       try {
         const res = await api.get("/me");
         if (!mounted) return;
         if (res?.data?.user) {
-          // persist user for rest of app
           try {
             localStorage.setItem("user", JSON.stringify(res.data.user));
-          } catch (e) {
-            // ignore storage errors
-          }
+          } catch (e) {}
           setValid(true);
         } else {
           setValid(false);
         }
       } catch (err) {
-        // treat any error as unauthenticated
         setValid(false);
       } finally {
         if (mounted) setLoading(false);
@@ -80,7 +75,6 @@ function RequireAuth({ children }) {
     return () => {
       mounted = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   if (valid === true) return children;
@@ -93,7 +87,6 @@ function LogoutButton() {
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
-    // reload to ensure socket picks up change (you can replace with socket re-init later)
     navigate("/login");
     window.location.reload();
   };
@@ -177,6 +170,7 @@ export default function App() {
     <UserProvider>
       <Router>
         <AppRoutes />
+        <ToastContainer position="top-right" autoClose={3000} />
       </Router>
     </UserProvider>
   );

@@ -25,7 +25,6 @@ const minRatingBySection = {
 
 /**
  * GET /api/daily/today
- * Public-ish: returns sections and whether unlocked for current user (optional auth)
  */
 export async function getToday(req, res) {
   try {
@@ -47,7 +46,7 @@ export async function getToday(req, res) {
 
     res.json({ date: daily.date, sections });
   } catch (err) {
-    console.error("Daily getToday error:", err);
+    console.error("Daily getToday error:", err && err.stack ? err.stack : err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -71,7 +70,7 @@ export async function getSectionProblems(req, res) {
 
     res.json({ date, sectionKey, questions: section.problems.map((p) => p.question) });
   } catch (err) {
-    console.error("Daily getSectionProblems error:", err);
+    console.error("Daily getSectionProblems error:", err && err.stack ? err.stack : err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -83,12 +82,18 @@ export async function getSectionProblems(req, res) {
  */
 export async function submitAttempt(req, res) {
   try {
-    // DEBUG LOG: show incoming user & payload summary
     const debugUserId = req.user?._id || req.user?.id || "NO_USER";
     console.log(`[submitAttempt] called by user=${debugUserId} payloadDate=${req.body?.date} section=${req.body?.sectionKey}`);
 
-    const userId = req.user?._id || req.user?.id;
-    if (!userId) return res.status(401).json({ error: "Not authenticated" });
+    const userIdRaw = req.user?._id || req.user?.id;
+    if (!userIdRaw) return res.status(401).json({ error: "Not authenticated" });
+
+    let userId = userIdRaw;
+    try {
+      userId = typeof userIdRaw === "string" ? new mongoose.Types.ObjectId(userIdRaw) : userIdRaw;
+    } catch (e) {
+      console.warn("[submitAttempt] could not convert userId to ObjectId, using raw value", e);
+    }
 
     const { date, sectionKey, answers } = req.body;
     if (!date || !sectionKey || !Array.isArray(answers)) {
@@ -130,7 +135,7 @@ export async function submitAttempt(req, res) {
 
     // Persist attempt
     const attempt = await DailyAttempt.create({
-      userId: mongoose.Types.ObjectId(userId),
+      userId,
       date,
       sectionKey,
       score: baseScore,
@@ -146,38 +151,48 @@ export async function submitAttempt(req, res) {
     const season = await Season.currentSeason();
     const seasonKey = season ? `${season.year}-${season.month}` : null;
 
-    const userUpdate = {};
+    const updateOps = {};
     if (practicePoints) {
-      userUpdate.$inc = { totalPracticePoints: practicePoints };
-      if (seasonKey) {
-        userUpdate.$inc[`seasonPoints.${seasonKey}`] = practicePoints;
-      }
+      updateOps.$inc = { totalPracticePoints: practicePoints };
+      if (seasonKey) updateOps.$inc[`seasonPoints.${seasonKey}`] = practicePoints;
     }
 
     // Handle streaks: check last attempt date for this user (any section)
-    const yesterday = dayjs(date).utc().subtract(1, "day").format("YYYY-MM-DD");
-    const hadYesterday = await DailyAttempt.findOne({ userId, date: yesterday });
-    if (hadYesterday) {
-      userUpdate.$inc = { ...(userUpdate.$inc || {}), currentStreak: 1 };
-      userUpdate.$set = { ...(userUpdate.$set || {}), lastDailyAt: new Date() };
-    } else {
-      userUpdate.$set = { ...(userUpdate.$set || {}), currentStreak: 1, lastDailyAt: new Date() };
-    }
-
-    // atomic update
     try {
-      const updated = await User.findByIdAndUpdate(userId, userUpdate, { new: true }).lean();
+      const yesterday = dayjs(date).utc().subtract(1, "day").format("YYYY-MM-DD");
+      const hadYesterday = await DailyAttempt.findOne({ userId, date: yesterday });
+
+      if (hadYesterday) {
+        updateOps.$inc = { ...(updateOps.$inc || {}), currentStreak: 1 };
+      } else {
+        // Reset to 1
+        updateOps.$set = { ...(updateOps.$set || {}), currentStreak: 1 };
+      }
+      updateOps.$set = { ...(updateOps.$set || {}), lastDailyAt: new Date() };
+
+      const updated = await User.findByIdAndUpdate(userId, updateOps, { new: true }).lean();
+
       const badges = [];
-      if (updated.currentStreak >= 7) badges.push("streak-7");
-      if (updated.currentStreak >= 30) badges.push("streak-30");
-      if (updated.currentStreak >= 100) badges.push("streak-100");
+      if (updated?.currentStreak >= 7 && !updated.badges?.includes("streak-7")) badges.push("streak-7");
+      if (updated?.currentStreak >= 30 && !updated.badges?.includes("streak-30")) badges.push("streak-30");
+      if (updated?.currentStreak >= 100 && !updated.badges?.includes("streak-100")) badges.push("streak-100");
+
+      // Optionally persist badges if any (keep it simple: only push new badges)
+      if (badges.length) {
+        try {
+          await User.findByIdAndUpdate(userId, { $addToSet: { badges: { $each: badges } } });
+        } catch (e) {
+          console.warn("Failed to persist badges", e);
+        }
+      }
+
       res.json({ attempt, awardedBadges: badges, practicePoints });
     } catch (err) {
-      console.warn("Daily submit: failed to update user streak/points", err);
-      res.json({ attempt, practicePoints });
+      console.warn("Daily submit: failed to update user streak/points", err && err.stack ? err.stack : err);
+      res.json({ attempt, practicePoints, warning: "User update failed" });
     }
   } catch (err) {
-    console.error("Daily submitAttempt error:", err);
+    console.error("Daily submitAttempt error:", err && err.stack ? err.stack : err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -201,7 +216,7 @@ export async function getDailyLeaderboard(req, res) {
 
     res.json({ top });
   } catch (err) {
-    console.error("Daily getDailyLeaderboard error:", err);
+    console.error("Daily getDailyLeaderboard error:", err && err.stack ? err.stack : err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -216,14 +231,14 @@ export async function getSeasonLeaderboard(req, res) {
     const seasonKey = `${year}-${month}`;
 
     const top = await User.aggregate([
-      { $project: { name: 1, rating: 1, seasonPoints: { $ifNull: ["$seasonPoints." + seasonKey, 0] } } },
+      { $project: { name: 1, rating: 1, seasonPoints: { $ifNull: [`$seasonPoints.${seasonKey}`, 0] } } },
       { $sort: { seasonPoints: -1 } },
       { $limit: 50 },
     ]);
 
     res.json({ top });
   } catch (err) {
-    console.error("Daily getSeasonLeaderboard error:", err);
+    console.error("Daily getSeasonLeaderboard error:", err && err.stack ? err.stack : err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -245,7 +260,7 @@ export async function getMyStreak(req, res) {
     }
     res.json({ currentStreak, days });
   } catch (err) {
-    console.error("Daily getMyStreak error:", err);
+    console.error("Daily getMyStreak error:", err && err.stack ? err.stack : err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -255,9 +270,6 @@ export async function getMyStreak(req, res) {
  */
 export async function postComment(req, res) {
   try {
-    const debugUserId = req.user?._id || req.user?.id || "NO_USER";
-    console.log(`[postComment] called by user=${debugUserId} bodyDate=${req.body?.date} section=${req.body?.sectionKey}`);
-
     const userId = req.user?._id;
     if (!userId) return res.status(401).json({ error: "Not authenticated" });
     const { date, sectionKey, text } = req.body;
@@ -266,7 +278,7 @@ export async function postComment(req, res) {
     const user = await User.findById(userId).select("name").lean();
     res.json({ comment: { _id: comment._id, date, sectionKey, text, createdAt: comment.createdAt, user: { _id: userId, name: user?.name || "Unknown" } } });
   } catch (err) {
-    console.error("Daily postComment error:", err);
+    console.error("Daily postComment error:", err && err.stack ? err.stack : err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -288,7 +300,7 @@ export async function getComments(req, res) {
     ]);
     res.json({ comments: rows });
   } catch (err) {
-    console.error("Daily getComments error:", err);
+    console.error("Daily getComments error:", err && err.stack ? err.stack : err);
     res.status(500).json({ error: "Server error" });
   }
 }
