@@ -5,17 +5,20 @@ import utc from "dayjs/plugin/utc";
 dayjs.extend(utc);
 
 /**
- * StreakCalendar — single-year spreadable view
- *
+ * StreakCalendar
  * Props:
  *  - days: [{ date: "YYYY-MM-DD", solved: true/false }]
- *  - yearsRange: number (how many recent years appear in selector) default 3
- *  - defaultYear: number | null
- *  - cellSize: number (default 14)
- *  - gap: number (default 6)
+ *  - defaultYear: number|null
+ *  - cellSize, gap (appearance)
+ *  - onDayClick(dateIso, info) -> called when user clicks a day cell
+ *
+ * Behavior:
+ *  - auto-derives available years from days array (if present)
+ *  - displays a single year at a time (selectable)
+ *  - emits onDayClick for clicks on in-range days
  */
 
-const DEFAULT_CELL = 14;
+const DEFAULT_CELL = 12;
 const DEFAULT_GAP = 6;
 const COLOR_BG = "#ebedf0";
 const COLOR_SOLVED = "#2f9e44";
@@ -33,6 +36,18 @@ function buildLookup(days = []) {
   return map;
 }
 
+function buildAvailableYears(days = []) {
+  const years = new Set();
+  for (const it of days || []) {
+    try {
+      const y = dayjs(it.date).utc().year();
+      if (!Number.isNaN(y)) years.add(y);
+    } catch {}
+  }
+  const arr = Array.from(years).sort((a, b) => b - a);
+  return arr;
+}
+
 function buildWeeksForYear(year, { daysLookup }) {
   const startOfYear = dayjs.utc(`${year}-01-01`).startOf("day");
   const endOfYearRaw = dayjs.utc(`${year}-12-31`).endOf("day");
@@ -40,13 +55,12 @@ function buildWeeksForYear(year, { daysLookup }) {
 
   let endOfYear;
   if (year === today.year()) {
-    // cap end date at today for current year
     endOfYear = endOfYearRaw.isBefore(today) ? endOfYearRaw : today;
   } else {
     endOfYear = endOfYearRaw;
   }
 
-  const start = startOfYear.startOf("week"); // align to Sunday
+  const start = startOfYear.startOf("week"); // Sunday aligned
 
   const weeks = [];
   let cursor = start;
@@ -65,7 +79,7 @@ function buildWeeksForYear(year, { daysLookup }) {
     }
     weeks.push({ startIso: cursor.format("YYYY-MM-DD"), days });
     cursor = cursor.add(7, "day");
-    if (weeks.length > 1000) break; // safety
+    if (weeks.length > 1100) break;
   }
 
   return { weeks, startOfYear, endOfYear };
@@ -82,29 +96,37 @@ function computeMonthLabels(weeks) {
       break;
     }
   });
-  return map; // monthKey -> col index
+  return map;
 }
 
 export default function StreakCalendar({
   days = [],
-  yearsRange = 3,
   defaultYear = null,
   cellSize = DEFAULT_CELL,
   gap = DEFAULT_GAP,
+  onDayClick = null,
 }) {
   const daysLookup = useMemo(() => buildLookup(days), [days]);
 
-  const currentYear = dayjs.utc().year();
-  const years = useMemo(() => {
-    const arr = [];
-    for (let i = 0; i < Math.max(1, yearsRange); i++) arr.push(currentYear - i);
-    return arr;
-  }, [yearsRange, currentYear]);
+  const availableYears = useMemo(() => {
+    const yrs = buildAvailableYears(days);
+    // always include current year even if no days provided
+    const cy = dayjs.utc().year();
+    if (!yrs.includes(cy)) yrs.unshift(cy);
+    return yrs.length ? yrs : [cy];
+  }, [days]);
 
   const [selectedYear, setSelectedYear] = useState(() => {
-    if (defaultYear && years.includes(defaultYear)) return defaultYear;
-    return currentYear;
+    if (defaultYear && availableYears.includes(defaultYear)) return defaultYear;
+    return availableYears[0];
   });
+
+  // ensure if availableYears changes we keep selection valid
+  React.useEffect(() => {
+    if (!availableYears.includes(selectedYear)) {
+      setSelectedYear(availableYears[0]);
+    }
+  }, [availableYears]); // eslint-disable-line
 
   const { weeks } = useMemo(
     () => buildWeeksForYear(selectedYear, { daysLookup }),
@@ -113,9 +135,8 @@ export default function StreakCalendar({
 
   const monthMap = useMemo(() => computeMonthLabels(weeks), [weeks]);
 
-  // Refs & layout calculations to spread grid nicely
+  // layout measuring
   const containerRef = useRef(null);
-  const weeksRef = useRef(null);
   const [containerWidth, setContainerWidth] = useState(0);
 
   useLayoutEffect(() => {
@@ -130,20 +151,12 @@ export default function StreakCalendar({
 
   const colWidth = cellSize + gap;
   const approxGridWidth = weeks.length * colWidth + 12;
-  const stretch =
-    containerWidth > approxGridWidth
-      ? (containerWidth - 12) / Math.max(weeks.length, 1)
-      : null;
-
+  const stretch = containerWidth > approxGridWidth ? (containerWidth - 12) / Math.max(weeks.length, 1) : null;
   const effectiveColWidth = stretch ? Math.max(colWidth, stretch) : colWidth;
-  const effectiveCellSize = stretch
-    ? Math.max(cellSize, effectiveColWidth - gap)
-    : cellSize;
+  const effectiveCellSize = stretch ? Math.max(cellSize, effectiveColWidth - gap) : cellSize;
+  const padding = 6;
 
-  const colLeft = (colIdx) => {
-    const padding = 6;
-    return Math.round(padding + colIdx * effectiveColWidth);
-  };
+  const colLeft = (colIdx) => Math.round(padding + colIdx * effectiveColWidth);
 
   const cellStyle = (d) => ({
     width: effectiveCellSize,
@@ -153,94 +166,44 @@ export default function StreakCalendar({
     opacity: d.inRange ? 1 : 0.22,
     border: "1px solid rgba(0,0,0,0.04)",
     boxSizing: "border-box",
+    cursor: d.inRange ? "pointer" : "default",
+    transition: "transform .08s ease",
   });
 
+  const handleClick = (d) => {
+    if (!d.inRange) return;
+    if (typeof onDayClick === "function") {
+      onDayClick(d.iso, { date: d.iso, solved: d.solved, inRange: d.inRange });
+    }
+  };
+
   return (
-    <div
-      ref={containerRef}
-      className="streak-calendar w-full"
-      style={{
-        fontFamily: `Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial`,
-      }}
-    >
-      <div className="bg-white p-6 rounded shadow mb-6">
-        <div className="flex items-start justify-between mb-4 gap-4">
+    <div ref={containerRef} className="w-full">
+      <div className="bg-white p-4 rounded shadow-sm">
+        <div className="flex items-center justify-between mb-3 gap-4">
           <div>
-            <h3 className="text-xl font-semibold">Activity — {selectedYear}</h3>
-            <div className="text-sm text-gray-600">Each square = one day</div>
+            <div className="text-lg font-semibold">Activity</div>
+            <div className="text-xs text-gray-500">Choose year and explore day-by-day activity</div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-3 text-sm text-gray-600">
-              <div className="flex items-center gap-2">
-                <div
-                  style={{
-                    width: effectiveCellSize,
-                    height: effectiveCellSize,
-                    background: COLOR_BG,
-                    borderRadius: 4,
-                  }}
-                />{" "}
-                None
-              </div>
-              <div className="flex items-center gap-2">
-                <div
-                  style={{
-                    width: effectiveCellSize,
-                    height: effectiveCellSize,
-                    background: COLOR_SOLVED,
-                    borderRadius: 4,
-                  }}
-                />{" "}
-                Solved
-              </div>
-            </div>
-            <div>
-              <label htmlFor="year-select" className="sr-only">
-                Year
-              </label>
-              <select
-                id="year-select"
-                value={selectedYear}
-                onChange={(e) => setSelectedYear(Number(e.target.value))}
-                className="px-3 py-2 border rounded bg-white"
-              >
-                {years.map((y) => (
-                  <option key={y} value={y}>
-                    {y}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-gray-500 mr-2">Year</div>
+            <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} className="px-3 py-1 border rounded bg-white text-sm">
+              {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
           </div>
         </div>
 
         {/* Month labels */}
         <div style={{ position: "relative", marginBottom: 8 }}>
           <div style={{ height: effectiveCellSize + 8 }} />
-          <div
-            style={{
-              position: "absolute",
-              left: effectiveCellSize + gap,
-              right: 12,
-              top: 0,
-            }}
-          >
+          <div style={{ position: "absolute", left: effectiveCellSize + gap, right: 12, top: 0 }}>
             <div style={{ position: "relative", height: 24 }}>
               {Array.from(monthMap.entries()).map(([monthKey, colIdx]) => {
                 const left = colLeft(colIdx);
                 const label = dayjs.utc(monthKey + "-01").format("MMM");
                 return (
-                  <div
-                    key={monthKey}
-                    style={{
-                      position: "absolute",
-                      left,
-                      transform: "translateX(-6px)",
-                      fontSize: 13,
-                      fontWeight: 600,
-                    }}
-                  >
+                  <div key={monthKey} style={{ position: "absolute", left, transform: "translateX(-6px)", fontSize: 13, fontWeight: 600 }}>
                     {label}
                   </div>
                 );
@@ -250,50 +213,27 @@ export default function StreakCalendar({
         </div>
 
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-          {/* Weekday labels */}
+          {/* weekday labels */}
           <div style={{ display: "flex", flexDirection: "column", gap }}>
             <div style={{ height: effectiveCellSize }} />
             {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-              <div
-                key={d}
-                style={{ height: effectiveCellSize, fontSize: 13, color: "#666" }}
-              >
-                {d}
-              </div>
+              <div key={d} style={{ height: effectiveCellSize, fontSize: 12, color: "#666" }}>{d}</div>
             ))}
           </div>
 
-          {/* Weeks container */}
-          <div
-            style={{ overflowX: "auto", width: "100%", paddingBottom: 6 }}
-            ref={weeksRef}
-          >
-            <div
-              style={{
-                display: "inline-flex",
-                gap: gap,
-                padding: 6,
-                minWidth: Math.max(approxGridWidth, containerWidth - 24),
-                alignItems: "flex-start",
-              }}
-            >
+          {/* weeks */}
+          <div style={{ overflowX: "auto", width: "100%", paddingBottom: 6 }}>
+            <div style={{ display: "inline-flex", gap, padding: padding, minWidth: Math.max(approxGridWidth, containerWidth - 24), alignItems: "flex-start" }}>
               {weeks.map((w) => (
-                <div
-                  key={w.startIso}
-                  style={{ display: "flex", flexDirection: "column", gap }}
-                >
+                <div key={w.startIso} style={{ display: "flex", flexDirection: "column", gap }}>
                   {w.days.map((d) => (
                     <div
                       key={d.iso}
-                      title={`${d.dayjsObj.format(
-                        "ddd, MMM D, YYYY"
-                      )} — ${
-                        d.inRange
-                          ? d.solved
-                            ? "Solved"
-                            : "Missed"
-                          : "Out of range"
-                      }`}
+                      title={`${d.dayjsObj.format("ddd, MMM D, YYYY")} — ${d.inRange ? (d.solved ? "Solved" : "Missed") : "Out of range"}`}
+                      onClick={() => handleClick(d)}
+                      onMouseDown={(e) => { if (d.inRange) e.currentTarget.style.transform = "scale(0.98)"; }}
+                      onMouseUp={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
                       style={cellStyle(d)}
                     />
                   ))}
@@ -303,10 +243,7 @@ export default function StreakCalendar({
           </div>
         </div>
 
-        <div className="mt-3 text-sm text-gray-500">
-          Tip: Hover any square to see the date and status. Use horizontal scroll
-          if the grid is wide.
-        </div>
+        <div className="mt-2 text-xs text-gray-500">Hover or click a day to see details. Use horizontal scroll to view all weeks.</div>
       </div>
     </div>
   );

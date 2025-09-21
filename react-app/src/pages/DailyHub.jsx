@@ -26,6 +26,9 @@ export default function DailyHub() {
   const [comments, setComments] = useState([]);
   const [loadingDaily, setLoadingDaily] = useState(true);
 
+  // calendar clicked day details
+  const [pickedDay, setPickedDay] = useState(null); // { date, solved, inRange }
+
   useEffect(() => {
     loadToday();
     loadStreak();
@@ -50,7 +53,6 @@ export default function DailyHub() {
       const res = await fetchStreak();
       if (res) setStreak(res);
     } catch (err) {
-      // unauthenticated or error -> empty streak
       setStreak({ currentStreak: 0, days: [] });
     }
   }
@@ -97,7 +99,6 @@ export default function DailyHub() {
     try {
       const res = await submitDailyAttempt(payload);
       alert(`Submitted: practice points ${res.practicePoints || 0}. Badges: ${res.awardedBadges?.join(", ") || "None"}`);
-      // refresh leaderboard & streak & season
       const lb = await fetchDailyLeaderboard(selected.date, selected.key);
       setLeaderboard(lb.top || []);
       await loadStreak();
@@ -107,6 +108,23 @@ export default function DailyHub() {
       alert(err.response?.data?.error || err.message || "Submit failed");
     }
   }
+
+  // calendar click handler
+  const handleCalendarClick = async (dateIso, info) => {
+    setPickedDay(info);
+    // Optionally fetch attempts/comments for that date to show details (non-blocking)
+    try {
+      // attempt to fetch daily leaderboard for the same section if selected or use 'basic'
+      if (selected) {
+        const lb = await fetchDailyLeaderboard(dateIso, selected.key);
+        setLeaderboard(lb.top || []);
+      }
+      const cm = await fetchComments(dateIso, selected?.key || "basic");
+      setComments(cm.comments || []);
+    } catch (err) {
+      // ignore
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-100 to-purple-100 p-6">
@@ -128,7 +146,7 @@ export default function DailyHub() {
 
         {/* Streak calendar (full width) */}
         <div className="mb-6">
-          <StreakCalendar days={streak.days} yearsRange={3} cellSize={12} gap={6} />
+          <StreakCalendar days={streak.days} defaultYear={new Date().getUTCFullYear()} cellSize={12} gap={6} onDayClick={handleCalendarClick} />
         </div>
 
         {/* Season leaderboard directly under the streak calendar (full width) */}
@@ -138,7 +156,7 @@ export default function DailyHub() {
           </div>
         </div>
 
-        {/* Main grid: left -> Today's Sections, right -> Your Streak card */}
+        {/* Main grid: left -> Today's Sections, right -> Your Streak + date details */}
         <div className="grid md:grid-cols-3 gap-6">
           <div className="md:col-span-2 bg-white p-6 rounded shadow">
             <h2 className="text-lg font-semibold mb-3">Today's Sections</h2>
@@ -229,9 +247,21 @@ export default function DailyHub() {
               <div className="text-sm text-gray-600">days</div>
             </div>
 
-            <div className="mt-6 text-sm text-gray-500">
-              Tip: Click a day in the calendar above to inspect activity. Streaks update after you submit a daily attempt.
-            </div>
+            {/* If user clicked a day, show details here */}
+            {pickedDay ? (
+              <div className="mt-4 p-3 rounded border bg-gray-50">
+                <div className="text-sm text-gray-600">Date</div>
+                <div className="font-medium">{pickedDay.date}</div>
+                <div className="text-sm mt-2">{pickedDay.inRange ? (pickedDay.solved ? <span className="text-green-600">Solved</span> : <span className="text-red-600">Missed</span>) : <span className="text-gray-500">Out of range</span>}</div>
+                <div className="mt-3">
+                  <button className="px-3 py-1 rounded bg-white border text-sm" onClick={() => setPickedDay(null)}>Close</button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-gray-500">Click any day on the calendar above to inspect that day's activity.</div>
+            )}
+
+            <div className="mt-6 text-sm text-gray-500">Streaks update when you submit daily attempts.</div>
           </div>
         </div>
       </div>
