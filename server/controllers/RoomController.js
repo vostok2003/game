@@ -116,47 +116,75 @@ export async function getTimer(roomCode) {
 
 /**
  * Submit answer (multiplayer)
+ *
+ * - Only advance player.current when answer is correct.
+ * - Invoke callback with { correct, nextQuestion, score, currentQuestion, error }.
+ * - Returns { room, advanced } where advanced === true when player's current advanced.
  */
 export async function submitAnswer(socket, { answer }, callback) {
   const roomCode = socket.data.roomCode;
   const room = await Room.findOne({ roomCode });
-  if (!room) return;
+  if (!room) {
+    if (typeof callback === "function") callback({ error: "Room not found" });
+    return { room: null, advanced: false };
+  }
 
   const player = room.players.find((p) => {
     if (socket.data.userId && p.userId) {
       try {
-        return p.userId.toString() === socket.data.userId.toString();
+        return String(p.userId) === String(socket.data.userId);
       } catch {
         return false;
       }
     }
     return p.name === socket.data.name;
   });
-  if (!player) return;
+  if (!player) {
+    if (typeof callback === "function") callback({ error: "Player not found in room" });
+    return { room: null, advanced: false };
+  }
 
   const idx = player.current;
 
   if (!room.questions || !room.questions[idx]) {
-    return callback({
-      correct: false,
-      error: "Invalid question index",
-      score: player.score || 0,
-    });
+    if (typeof callback === "function") {
+      callback({
+        correct: false,
+        error: "Invalid question index",
+        score: player.score || 0,
+        currentQuestion: player.current,
+      });
+    }
+    return { room, advanced: false };
   }
 
   const correct = Number(answer) === room.questions[idx].answer;
-  if (correct) player.score++;
-  player.current++;
+  if (correct) {
+    player.score = (player.score || 0) + 1;
+    player.current = player.current + 1;
+    await room.save();
 
-  await room.save();
-
-  callback({
-    correct,
-    nextQuestion: room.questions[player.current]?.question,
-    score: player.score,
-  });
-
-  return room;
+    if (typeof callback === "function") {
+      callback({
+        correct: true,
+        nextQuestion: room.questions[player.current]?.question,
+        score: player.score,
+        currentQuestion: player.current,
+      });
+    }
+    return { room, advanced: true };
+  } else {
+    // wrong answer -> do NOT advance. Do not persist.
+    if (typeof callback === "function") {
+      callback({
+        correct: false,
+        nextQuestion: room.questions[player.current]?.question,
+        score: player.score || 0,
+        currentQuestion: player.current,
+      });
+    }
+    return { room, advanced: false };
+  }
 }
 
 /**
@@ -316,45 +344,69 @@ export async function getSinglePlayerTimer(roomCode) {
   return { timeLeft };
 }
 
+/**
+ * submitSinglePlayerAnswer: same rule — advance only on correct
+ * returns { room, advanced } and invokes callback
+ */
 export async function submitSinglePlayerAnswer(socket, { answer }, callback) {
   const roomCode = socket.data.roomCode;
   const room = await Room.findOne({ roomCode });
-  if (!room) return;
+  if (!room) {
+    if (typeof callback === "function") callback({ error: "Room not found" });
+    return { room: null, advanced: false };
+  }
 
   const player = room.players.find((p) => {
     if (socket.data.userId && p.userId) {
       try {
-        return p.userId.toString() === socket.data.userId.toString();
+        return String(p.userId) === String(socket.data.userId);
       } catch {
         return false;
       }
     }
     return p.name === socket.data.name;
   });
-  if (!player) return;
+  if (!player) {
+    if (typeof callback === "function") callback({ error: "Player not found in room" });
+    return { room: null, advanced: false };
+  }
 
   const idx = player.current;
   if (!room.questions || !room.questions[idx]) {
-    return callback({
-      correct: false,
-      error: "Invalid question index",
-      score: player.score || 0,
-      currentQuestion: player.current,
-    });
+    if (typeof callback === "function") {
+      callback({
+        correct: false,
+        error: "Invalid question index",
+        score: player.score || 0,
+        currentQuestion: player.current,
+      });
+    }
+    return { room, advanced: false };
   }
 
   const correct = Number(answer) === room.questions[idx].answer;
-  if (correct) player.score++;
-  player.current++;
-
-  await room.save();
-
-  callback({
-    correct,
-    nextQuestion: room.questions[player.current]?.question,
-    score: player.score,
-    currentQuestion: player.current,
-  });
-
-  return room;
+  if (correct) {
+    player.score = (player.score || 0) + 1;
+    player.current = player.current + 1;
+    await room.save();
+    if (typeof callback === "function") {
+      callback({
+        correct: true,
+        nextQuestion: room.questions[player.current]?.question,
+        score: player.score,
+        currentQuestion: player.current,
+      });
+    }
+    return { room, advanced: true };
+  } else {
+    if (typeof callback === "function") {
+      callback({
+        correct: false,
+        nextQuestion: room.questions[player.current]?.question,
+        score: player.score || 0,
+        currentQuestion: player.current,
+      });
+    }
+    return { room, advanced: false };
+  }
 }

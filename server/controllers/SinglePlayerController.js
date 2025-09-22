@@ -1,3 +1,4 @@
+// server/controllers/SinglePlayerController.js
 import generateQuestions from "../utils/questionGenerator.js";
 import { v4 as uuidv4 } from "uuid";
 
@@ -26,26 +27,40 @@ export function startSinglePlayerGame(req, res) {
 }
 
 export function submitSinglePlayerAnswer(req, res) {
-  const { sessionId, answer } = req.body;
-  const session = sessions[sessionId];
-  if (!session || session.over)
-    return res.status(400).json({ error: "Session not found or over" });
+  try {
+    const { sessionId, answer } = req.body;
+    const session = sessions[sessionId];
+    if (!session || session.over)
+      return res.status(400).json({ error: "Session not found or over" });
 
-  const idx = session.current;
-  const correct = Number(answer) === session.questions[idx].answer;
-  if (correct) session.score++;
-  session.current++;
+    const idx = session.current;
+    if (!session.questions || !session.questions[idx]) {
+      return res.status(400).json({ error: "Invalid question index" });
+    }
 
-  // Check if game is over
-  if (session.current >= session.questions.length) session.over = true;
+    const correct = Number(answer) === session.questions[idx].answer;
+    if (correct) {
+      session.score++;
+      session.current++;
+    } else {
+      // do not advance the question on wrong answer
+      // optionally, you might record attempt count if needed
+    }
 
-  res.json({
-    correct,
-    nextQuestion: session.questions[session.current]?.question,
-    score: session.score,
-    current: session.current,
-    over: session.over,
-  });
+    // Check if game is over after possible advance
+    if (session.current >= session.questions.length) session.over = true;
+
+    res.json({
+      correct,
+      nextQuestion: session.questions[session.current]?.question,
+      score: session.score,
+      current: session.current,
+      over: session.over,
+    });
+  } catch (err) {
+    console.error("submitSinglePlayerAnswer error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 }
 
 export function getSinglePlayerTimer(req, res) {

@@ -1,12 +1,20 @@
+// client/src/pages/Game.jsx
 import React, { useEffect, useState, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import getSocket from "../socket";
+import { toast } from "react-toastify";
 const socket = getSocket();
 
 export default function Game() {
   const location = useLocation();
   const navigate = useNavigate();
-  const user = JSON.parse(localStorage.getItem("user"));
+  const user = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("user"));
+    } catch {
+      return null;
+    }
+  })();
   const name = user?.name || "";
   // Try to get state from location or localStorage
   let {
@@ -16,7 +24,13 @@ export default function Game() {
     mode: initialMode,
   } = location.state || {};
   if (!roomCode) {
-    const saved = JSON.parse(localStorage.getItem("gameState"));
+    const saved = (() => {
+      try {
+        return JSON.parse(localStorage.getItem("gameState"));
+      } catch {
+        return null;
+      }
+    })();
     if (saved) {
       roomCode = saved.roomCode;
       initialPlayers = saved.players;
@@ -24,6 +38,7 @@ export default function Game() {
       initialMode = saved.mode;
     }
   }
+
   const [questions, setQuestions] = useState(initialQuestions || []);
   const [mode, setMode] = useState(initialMode || 1);
   const [answer, setAnswer] = useState("");
@@ -37,10 +52,12 @@ export default function Game() {
   // Persist game state in localStorage
   useEffect(() => {
     if (roomCode && questions && mode) {
-      localStorage.setItem(
-        "gameState",
-        JSON.stringify({ roomCode, players, questions, mode })
-      );
+      try {
+        localStorage.setItem(
+          "gameState",
+          JSON.stringify({ roomCode, players, questions, mode })
+        );
+      } catch {}
     }
   }, [roomCode, players, questions, mode]);
 
@@ -48,7 +65,7 @@ export default function Game() {
   useEffect(() => {
     if (!roomCode) return;
     socket.emit("rejoinRoom", { roomCode, name }, (data) => {
-      if (data.error) {
+      if (data?.error) {
         alert(data.error);
         navigate("/");
         return;
@@ -60,16 +77,19 @@ export default function Game() {
       setQuestions(data.questions || []);
       setMode(data.mode || 1);
       // Save questions and mode for future refreshes
-      localStorage.setItem(
-        "gameState",
-        JSON.stringify({
-          roomCode: data.roomCode,
-          players: data.players,
-          questions: data.questions,
-          mode: data.mode,
-        })
-      );
+      try {
+        localStorage.setItem(
+          "gameState",
+          JSON.stringify({
+            roomCode: data.roomCode,
+            players: data.players,
+            questions: data.questions,
+            mode: data.mode,
+          })
+        );
+      } catch {}
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomCode, navigate]);
 
   // Listen for timer updates from backend
@@ -80,7 +100,7 @@ export default function Game() {
     }
     socket.on("timerUpdate", handleTimerUpdate);
     // On mount, request current timer value
-    socket.emit("getTimer", {}, ({ timeLeft }) => {
+    socket.emit("getTimer", {}, ({ timeLeft } = {}) => {
       if (typeof timeLeft === "number") setTimer(timeLeft);
     });
     return () => {
@@ -92,7 +112,7 @@ export default function Game() {
   useEffect(() => {
     function handleProgressUpdate(newPlayers) {
       setPlayers(newPlayers);
-      const me = newPlayers.find((p) => p.name === name);
+      const me = newPlayers.find((p) => p.name === name || (p.userId && user?._id && String(p.userId) === String(user._id)));
       if (me) {
         setScore(me.score);
         setCurrentQuestion(me.current);
@@ -102,11 +122,11 @@ export default function Game() {
     return () => {
       socket.off("progressUpdate", handleProgressUpdate);
     };
-  }, [name]);
+  }, [name, user]);
 
-  // End game if all questions answered
+  // End game if all questions answered locally
   useEffect(() => {
-    if (currentQuestion >= questions.length) {
+    if (currentQuestion >= questions.length && questions.length > 0) {
       setGameOver(true);
     }
   }, [currentQuestion, questions.length]);
@@ -130,10 +150,12 @@ export default function Game() {
       setQuestions(questions);
       setMode(mode);
       // Save new game state
-      localStorage.setItem(
-        "gameState",
-        JSON.stringify({ roomCode, players, questions, mode })
-      );
+      try {
+        localStorage.setItem(
+          "gameState",
+          JSON.stringify({ roomCode, players, questions, mode })
+        );
+      } catch {}
       // Always request timer from backend after rematch
       socket.emit("getTimer", {}, ({ timeLeft }) => {
         if (typeof timeLeft === "number") setTimer(timeLeft);
@@ -148,10 +170,12 @@ export default function Game() {
       setQuestions(qs);
       setMode(m);
       // Save new game state
-      localStorage.setItem(
-        "gameState",
-        JSON.stringify({ roomCode, players, questions: qs, mode: m })
-      );
+      try {
+        localStorage.setItem(
+          "gameState",
+          JSON.stringify({ roomCode, players, questions: qs, mode: m })
+        );
+      } catch {}
       // Always request timer from backend after game start
       socket.emit("getTimer", {}, ({ timeLeft }) => {
         if (typeof timeLeft === "number") setTimer(timeLeft);
@@ -163,19 +187,40 @@ export default function Game() {
       socket.off("rematchStarted", handleRematchStarted);
       socket.off("gameStarted", handleGameStarted);
     };
-  }, [roomCode]);
+  }, [roomCode, players]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (gameOver) return;
+
+    // block empty submissions (prevent skipping)
+    if (String(answer).trim() === "") {
+      toast.error("Enter an answer before submitting.");
+      return;
+    }
+
+    // emit to server; server will only advance on correct answers
     socket.emit(
       "submitAnswer",
       { answer },
-      ({ correct, nextQuestion, score: newScore }) => {
+      ({ correct, nextQuestion, score: newScore, error, currentQuestion: serverCurrent }) => {
+        if (error) {
+          // server-level error (invalid index etc.)
+          alert(error);
+          return;
+        }
         if (correct) {
           setAnswer("");
           setScore(newScore);
-          setCurrentQuestion((cq) => cq + 1);
+          // Use server supplied current index if provided
+          if (typeof serverCurrent === "number") setCurrentQuestion(serverCurrent);
+          else setCurrentQuestion((cq) => cq + 1);
+          toast.success("Correct!"); // brief feedback
+        } else {
+          // incorrect — keep user on same question and give feedback
+          toast.error("Wrong answer — try again.");
+          // ensure local currentQuestion matches server
+          if (typeof serverCurrent === "number") setCurrentQuestion(serverCurrent);
         }
       }
     );

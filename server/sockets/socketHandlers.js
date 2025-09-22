@@ -65,34 +65,46 @@ export default function socketHandlers(io) {
     });
 
     socket.on("submitAnswer", async (data, callback) => {
-      const room = await submitAnswer(socket, data, callback);
-      if (room) {
-        io.to(room.roomCode).emit(
-          "progressUpdate",
-          room.players.map((p) => ({
-            name: p.name,
-            userId: p.userId,
-            score: p.score,
-            current: p.current,
-          }))
-        );
+      try {
+        const result = await submitAnswer(socket, data, callback); // returns { room, advanced }
+        const room = result?.room;
+        const advanced = !!result?.advanced;
+        if (!room) return;
 
-        // If everyone has completed all questions, finalize now
-        const allDone = room.players.every(
-          (p) => typeof p.current === "number" && p.current >= room.questions.length
-        );
-        if (allDone) {
-          // Clear timer interval if running
-          if (roomTimers[room.roomCode]) {
-            clearInterval(roomTimers[room.roomCode]);
-            delete roomTimers[room.roomCode];
+        // Only broadcast progress when player's state actually changed (i.e., advanced)
+        if (advanced) {
+          io.to(room.roomCode).emit(
+            "progressUpdate",
+            room.players.map((p) => ({
+              name: p.name,
+              userId: p.userId,
+              score: p.score,
+              current: p.current,
+            }))
+          );
+
+          // If everyone has completed all questions, finalize now
+          const allDone = room.players.every(
+            (p) => typeof p.current === "number" && p.current >= room.questions.length
+          );
+          if (allDone) {
+            // Clear timer interval if running
+            if (roomTimers[room.roomCode]) {
+              clearInterval(roomTimers[room.roomCode]);
+              delete roomTimers[room.roomCode];
+            }
+            try {
+              await finalizeRoomAndUpdateRatings(room.roomCode, io);
+            } catch (err) {
+              console.error("Error finalizing room on all-done submitAnswer:", err);
+            }
           }
-          try {
-            await finalizeRoomAndUpdateRatings(room.roomCode, io);
-          } catch (err) {
-            console.error("Error finalizing room on all-done submitAnswer:", err);
-          }
+        } else {
+          // For wrong answer, we can optionally notify only the submitting socket (but callback already did).
+          // No global emit.
         }
+      } catch (err) {
+        console.error("submitAnswer handler error:", err);
       }
     });
 
@@ -243,7 +255,26 @@ export default function socketHandlers(io) {
     });
 
     socket.on("submitSinglePlayerAnswer", async (data, callback) => {
-      await submitSinglePlayerAnswer(socket, data, callback);
+      try {
+        const result = await submitSinglePlayerAnswer(socket, data, callback);
+        const room = result?.room;
+        const advanced = !!result?.advanced;
+        if (!room) return;
+        // Emit progressUpdate only when player advanced
+        if (advanced) {
+          socket.emit(
+            "progressUpdate",
+            room.players.map((p) => ({
+              name: p.name,
+              userId: p.userId,
+              score: p.score,
+              current: p.current,
+            }))
+          );
+        }
+      } catch (err) {
+        console.error("submitSinglePlayerAnswer handler error:", err);
+      }
     });
   });
 
@@ -251,11 +282,7 @@ export default function socketHandlers(io) {
    * Helper: finalize match, update ratings in DB, emit ratings and leaderboard
    * Marks room as finalized to avoid duplicate runs.
    */
-   /**
-   * Helper: finalize match, update ratings in DB, emit ratings and leaderboard
-   * Marks room as finalized to avoid duplicate runs.
-   */
-  async function finalizeRoomAndUpdateRatings(roomCode, ioInstance) {
+   async function finalizeRoomAndUpdateRatings(roomCode, ioInstance) {
     if (!roomCode) return;
     if (finalizedRooms.has(roomCode)) {
       // already finalized
@@ -367,7 +394,6 @@ export default function socketHandlers(io) {
       setTimeout(() => finalizedRooms.delete(roomCode), 1000 * 60 * 5);
     }
   }
-
 
   /**
    * Manages a room's timer: emits timerUpdate every second and runs finalize when time ends.

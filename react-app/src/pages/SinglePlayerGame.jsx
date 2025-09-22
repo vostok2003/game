@@ -1,4 +1,4 @@
-// src/pages/SinglePlayerGame.jsx
+// client/src/pages/SinglePlayerGame.jsx
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
@@ -6,6 +6,7 @@ import {
   submitSinglePlayerAnswer,
   getSinglePlayerTimer,
 } from "../services/singleplayerService";
+import { toast } from "react-toastify";
 
 export default function SinglePlayerGame() {
   const navigate = useNavigate();
@@ -37,11 +38,32 @@ export default function SinglePlayerGame() {
 
     const resumeOrStart = async () => {
       if (sessionId) {
-        const { timeLeft, over } = await getSinglePlayerTimer(sessionId);
-        if (!mounted) return;
-        setTimer(timeLeft);
-        if (over) setGameOver(true);
-        setLoading(false);
+        try {
+          const { timeLeft, over } = await getSinglePlayerTimer(sessionId);
+          if (!mounted) return;
+          setTimer(timeLeft);
+          if (over) setGameOver(true);
+          setLoading(false);
+        } catch (err) {
+          // session might be invalid — start fresh
+          console.error("getSinglePlayerTimer failed, starting new session", err);
+          const data = await startSinglePlayer(pickedMode);
+          if (!mounted) return;
+          setSessionId(data.sessionId);
+          setQuestions(data.questions);
+          setCurrent(0);
+          setScore(0);
+          setGameOver(false);
+          setAnswer("");
+          setTimer(data.timerDuration);
+          try {
+            localStorage.setItem("singlePlayerSessionId", data.sessionId);
+            localStorage.setItem("singlePlayerQuestions", JSON.stringify(data.questions));
+            localStorage.setItem("singlePlayerCurrent", "0");
+            localStorage.setItem("singlePlayerScore", "0");
+          } catch {}
+          setLoading(false);
+        }
       } else {
         const data = await startSinglePlayer(pickedMode);
         if (!mounted) return;
@@ -52,10 +74,12 @@ export default function SinglePlayerGame() {
         setGameOver(false);
         setAnswer("");
         setTimer(data.timerDuration);
-        localStorage.setItem("singlePlayerSessionId", data.sessionId);
-        localStorage.setItem("singlePlayerQuestions", JSON.stringify(data.questions));
-        localStorage.setItem("singlePlayerCurrent", "0");
-        localStorage.setItem("singlePlayerScore", "0");
+        try {
+          localStorage.setItem("singlePlayerSessionId", data.sessionId);
+          localStorage.setItem("singlePlayerQuestions", JSON.stringify(data.questions));
+          localStorage.setItem("singlePlayerCurrent", "0");
+          localStorage.setItem("singlePlayerScore", "0");
+        } catch {}
         setLoading(false);
       }
     };
@@ -99,20 +123,26 @@ export default function SinglePlayerGame() {
   }, [current, questions.length]);
 
   useEffect(() => {
-    localStorage.setItem("singlePlayerCurrent", current.toString());
+    try {
+      localStorage.setItem("singlePlayerCurrent", String(current));
+    } catch {}
   }, [current]);
 
   useEffect(() => {
-    localStorage.setItem("singlePlayerScore", score.toString());
+    try {
+      localStorage.setItem("singlePlayerScore", String(score));
+    } catch {}
   }, [score]);
 
   useEffect(() => {
     if (gameOver) {
       setTimeout(() => {
-        localStorage.removeItem("singlePlayerSessionId");
-        localStorage.removeItem("singlePlayerQuestions");
-        localStorage.removeItem("singlePlayerCurrent");
-        localStorage.removeItem("singlePlayerScore");
+        try {
+          localStorage.removeItem("singlePlayerSessionId");
+          localStorage.removeItem("singlePlayerQuestions");
+          localStorage.removeItem("singlePlayerCurrent");
+          localStorage.removeItem("singlePlayerScore");
+        } catch {}
         navigate("/results", {
           state: { players: [{ name: "You", score }], score },
         });
@@ -123,14 +153,34 @@ export default function SinglePlayerGame() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (gameOver || !sessionId) return;
+
+    if (String(answer).trim() === "") {
+      toast.error("Enter an answer before submitting.");
+      return;
+    }
+
     try {
       const data = await submitSinglePlayerAnswer(sessionId, Number(answer));
-      if (data.correct) setScore(data.score);
-      setCurrent(data.current);
-      setAnswer("");
+      if (data.error) {
+        toast.error(data.error);
+        return;
+      }
+
+      if (data.correct) {
+        setScore(data.score);
+        setAnswer("");
+        setCurrent(data.current);
+        toast.success("Correct!");
+      } else {
+        // incorrect: keep on same question, notify user
+        toast.error("Wrong answer — try again.");
+        setCurrent(data.current); // ensure local index in sync
+      }
+
       if (data.over) setGameOver(true);
     } catch (err) {
       console.error(err);
+      toast.error("Submit failed");
     }
   };
 
