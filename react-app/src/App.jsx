@@ -57,7 +57,7 @@ function RequireAuth({ children }) {
     setLoading(true);
     (async () => {
       try {
-        const res = await api.get("/me");
+        const res = await api.get("/api/me");
         if (!mounted) return;
         if (res?.data?.user) {
           try {
