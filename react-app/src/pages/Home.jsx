@@ -110,10 +110,16 @@ export default function Home() {
     // Debug fetch: read text then parse JSON to show raw response on failure
     async function fetchLeaderboard() {
       try {
-        const baseURL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
-        const url = `${baseURL}/leaderboard`;
+        const baseURL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+        const url = `${baseURL}/api/leaderboard`;
         console.log("[Leaderboard] fetching", url);
-        const res = await fetch(url, { credentials: "include", headers: { Accept: "application/json" } });
+        const res = await fetch(url, { 
+          credentials: "include", 
+          headers: { 
+            Accept: "application/json",
+            'Content-Type': 'application/json'
+          } 
+        });
 
         console.log("[Leaderboard] status:", res.status, res.statusText);
         console.log("[Leaderboard] content-type:", res.headers.get("content-type"));
