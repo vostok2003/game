@@ -4,8 +4,11 @@ import { toast } from "react-toastify";
 import { motion, AnimatePresence } from "framer-motion";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
+import getSocket from "../socket";
 
 dayjs.extend(relativeTime);
+
+const socket = getSocket();
 
 export default function Discussion({ date, sectionKey, comments = [], onPosted }) {
   const [text, setText] = useState("");
@@ -21,10 +24,43 @@ export default function Discussion({ date, sectionKey, comments = [], onPosted }
     }
   })();
 
-  // Update local comments when prop changes
+  // Set up socket listeners for real-time updates
   useEffect(() => {
+    if (!date || !sectionKey) return;
+    
+    const roomId = `comments:${date}:${sectionKey}`;
+    
+    // Join the room for this specific discussion
+    socket.emit('joinDiscussion', roomId);
+    
+    // Listen for new comments
+    const handleNewComment = (newComment) => {
+      setLocalComments(prev => [newComment, ...prev]);
+    };
+    
+    // Listen for comment votes
+    const handleCommentVote = ({ commentId, votes }) => {
+      setLocalComments(prev => 
+        prev.map(comment => 
+          comment._id === commentId 
+            ? { ...comment, votes: { ...(comment.votes || {}), ...votes } } 
+            : comment
+        )
+      );
+    };
+    
+    socket.on('newComment', handleNewComment);
+    socket.on('commentVoted', handleCommentVote);
+    
+    // Update local comments when prop changes
     setLocalComments(comments);
-  }, [comments]);
+    
+    return () => {
+      socket.emit('leaveDiscussion', roomId);
+      socket.off('newComment', handleNewComment);
+      socket.off('commentVoted', handleCommentVote);
+    };
+  }, [date, sectionKey, comments]);
 
   const handleVote = async (commentId, voteType) => {
     if (!user) {
@@ -33,24 +69,36 @@ export default function Discussion({ date, sectionKey, comments = [], onPosted }
     }
     
     try {
-      await voteComment(commentId, voteType);
       // Optimistic UI update
-      setLocalComments(prev => prev.map(comment => {
-        if (comment._id === commentId) {
-          const newVotes = { ...(comment.votes || {}) };
-          const userVote = newVotes[user._id];
-          
-          // Toggle vote logic
-          if (userVote === voteType) {
-            delete newVotes[user._id]; // Remove vote if same type clicked
-          } else {
-            newVotes[user._id] = voteType; // Add/update vote
-          }
-          
-          return { ...comment, votes: newVotes };
-        }
-        return comment;
-      }));
+      const updatedVotes = { ...(localComments.find(c => c._id === commentId)?.votes || {}) };
+      const userVote = updatedVotes[user._id];
+      
+      // Toggle vote logic
+      if (userVote === voteType) {
+        delete updatedVotes[user._id]; // Remove vote if same type clicked
+      } else {
+        updatedVotes[user._id] = voteType; // Add/update vote
+      }
+      
+      // Update UI immediately
+      setLocalComments(prev => 
+        prev.map(comment => 
+          comment._id === commentId 
+            ? { ...comment, votes: { ...updatedVotes } } 
+            : comment
+        )
+      );
+      
+      // Send vote to server
+      await voteComment(commentId, voteType);
+      
+      // Emit socket event for real-time update
+      const roomId = `comments:${date}:${sectionKey}`;
+      socket.emit('commentVoted', { 
+        commentId, 
+        votes: updatedVotes,
+        room: roomId
+      });
     } catch (err) {
       console.error("Vote failed", err);
       toast.error(err.response?.data?.error || "Failed to process vote");
@@ -82,7 +130,9 @@ export default function Discussion({ date, sectionKey, comments = [], onPosted }
         text,
         user: { _id: user._id, name: user.name },
         createdAt: new Date().toISOString(),
-        votes: {}
+        votes: {},
+        date,
+        sectionKey
       };
       
       // Optimistic UI update
@@ -90,7 +140,24 @@ export default function Discussion({ date, sectionKey, comments = [], onPosted }
       setText("");
       
       // Submit to server
-      await postComment({ date, sectionKey, text });
+      const response = await postComment({ date, sectionKey, text });
+      
+      // Update the optimistic comment with the server response
+      setLocalComments(prev => 
+        prev.map(comment => 
+          !comment._id && comment.text === newComment.text 
+            ? { ...response, user: newComment.user } 
+            : comment
+        )
+      );
+      
+      // Emit socket event for real-time update
+      const roomId = `comments:${date}:${sectionKey}`;
+      socket.emit('newComment', { 
+        ...response, 
+        user: { _id: user._id, name: user.name },
+        room: roomId
+      });
       
       toast.success("✓ Comment posted");
       if (onPosted) onPosted();
