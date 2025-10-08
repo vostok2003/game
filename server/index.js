@@ -62,12 +62,15 @@ app.use((req, res, next) => {
 
 app.use(passport.initialize());
 
-app.use("/api", authRouter);
+// API routes
+app.use("/api", authRouter);  // This handles /api/me
 app.use("/api/leaderboard", leaderboardRouter);
 app.use("/api/singleplayer", singleplayerRouter);
-app.use("/auth", googleAuthRouter);
 app.use("/api/daily", dailyRouter);
 app.use("/api/contest", contestRouter);
+
+// Auth routes (Google OAuth)
+app.use("/auth", googleAuthRouter);
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
