@@ -39,7 +39,7 @@ app.use(cookieParser());
 // ✅ CORS fix
 app.use(
   cors({
-    origin: config.CORS_ORIGIN || "http://localhost:5173",
+    origin: [ "https://game-lovat-theta.vercel.app/","http://localhost:5173"],
     credentials: true,
   })
 );
