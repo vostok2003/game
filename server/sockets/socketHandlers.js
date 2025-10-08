@@ -18,26 +18,28 @@ import {
 import Room from "../models/Room.js";
 import User from "../models/User.js";
 // import { updateRatingsForMatch } from "../utils/glicko2Helper.js";
-import { updateRatingsForMatchElo } from "../utils/eloHelper.js";
 
 const roomTimers = {};
 const rematchRequests = {};
 const singlePlayerTimers = {};
 
-// avoid double finalization
-const finalizedRooms = new Set();
-
-export default function socketHandlers(io) {
+// Track active users in each room
+const activeUsers = new Map(); // roomId -> Set of userIds
+const commentRooms = new Map(); // roomId -> Set of socketIdslt function socketHandlers(io) {
   // require socket auth
   io.use(authenticateSocket);
 
   io.on("connection", (socket) => {
-    console.log("A user connected:", socket.id);
-
-    socket.on("createRoom", async (data, callback) => {
-      const room = await createRoom(socket, data, callback);
-      if (room) io.to(room.roomCode).emit("roomUpdate", room.players);
-    });
+    console.log("New client connected:", socket.id);
+    
+    // Handle joining a discussion room for comments
+    socket.on("joinDiscussion", (roomId) => {
+      console.log(`Socket ${socket.id} joining discussion room:`, roomId);
+      socket.join(roomId);
+      
+      // Track socket in comment room
+      if (!commentRooms.has(roomId)) {
+        commentRooms.set(roomId, new Set());
 
     socket.on("joinRoom", async (data, callback) => {
       const room = await joinRoom(socket, data, callback);
