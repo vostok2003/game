@@ -20,9 +20,10 @@ export default function AuthSuccess() {
     // fetch user info from backend
     const fetchUser = async () => {
       try {
-        const base = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
-        const res = await fetch(`${base}/me`, {
+        const base = import.meta.env.VITE_API_URL || "http://localhost:5000";
+        const res = await fetch(`${base}/api/me`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+          credentials: 'include',
         });
 
         // Read text first to avoid JSON.parse crash on HTML
