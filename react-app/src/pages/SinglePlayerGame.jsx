@@ -6,7 +6,7 @@ import {
   startSinglePlayer,
   submitSinglePlayerAnswer,
   getSinglePlayerTimer,
-} from "../services/singleplayerService";
+} from "../services/singlePlayerService";
 import { toast } from "react-toastify";
 
 // Mathematical symbols for background animation
