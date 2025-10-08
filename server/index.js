@@ -36,13 +36,29 @@ connectDB().catch((err) => console.error("DB connection error:", err));
 app.use(express.json());
 app.use(cookieParser());
 
-// ✅ CORS fix
-app.use(
-  cors({
-    origin: [ "https://game-lovat-theta.vercel.app/","http://localhost:5173"],
-    credentials: true,
-  })
-);
+// CORS configuration
+const allowedOrigins = [
+  'https://game-lovat-theta.vercel.app',
+  'http://localhost:5173',
+  'https://mathblitz.onrender.com'
+];
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
 
 app.use(passport.initialize());
 
