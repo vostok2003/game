@@ -2,24 +2,18 @@
 import Room from "../models/Room.js";
 import generateQuestions from "../utils/questionGenerator.js";
 import jwt from "jsonwebtoken";
-import User from "../models/User.js";
 import config from "../config/index.js";
 
 const JWT_SECRET = config.JWT_SECRET;
-if (!JWT_SECRET) {
-  console.warn(
-    "RoomController: JWT_SECRET not configured. Socket auth will fail if tokens are required."
-  );
-}
 
 /**
- * Socket authentication middleware (for socket.io)
+ * Socket authentication middleware
  */
 export function authenticateSocket(socket, next) {
   const token = socket.handshake.auth?.token;
   if (!token) return next(new Error("Authentication required"));
+
   try {
-    if (!JWT_SECRET) return next(new Error("JWT secret not configured"));
     const payload = jwt.verify(token, JWT_SECRET);
     socket.data.user = payload;
     next();
@@ -29,30 +23,26 @@ export function authenticateSocket(socket, next) {
 }
 
 /**
- * Create a new room
+ * Create room
  */
 export async function createRoom(socket, { mode }, callback) {
-  let name = socket.data.user?.name || "Anonymous";
-  const userId = socket.data.user?.id || socket.data.user?.sub || null;
+  const name = socket.data.user?.name || "Anonymous";
+  const userId = socket.data.user?.id || null;
 
   let roomCode;
-  let exists = true;
-  while (exists) {
+  while (true) {
     roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    exists = await Room.exists({ roomCode });
+    if (!(await Room.exists({ roomCode }))) break;
   }
 
-  const questions = generateQuestions(20);
-  const room = new Room({
+  const room = await Room.create({
     roomCode,
     mode,
-    questions,
+    questions: generateQuestions(20),
     players: [{ name, userId, score: 0, current: 0 }],
     started: false,
-    timer: null,
   });
 
-  await room.save();
   socket.join(roomCode);
   socket.data.roomCode = roomCode;
   socket.data.name = name;
@@ -63,15 +53,15 @@ export async function createRoom(socket, { mode }, callback) {
 }
 
 /**
- * Join existing room
+ * Join room
  */
 export async function joinRoom(socket, { roomCode }, callback) {
-  let name = socket.data.user?.name || "Anonymous";
-  const userId = socket.data.user?.id || socket.data.user?.sub || null;
-
   const room = await Room.findOne({ roomCode });
   if (!room) return callback({ error: "Room not found" });
   if (room.players.length >= 2) return callback({ error: "Room full" });
+
+  const name = socket.data.user?.name || "Anonymous";
+  const userId = socket.data.user?.id || null;
 
   room.players.push({ name, userId, score: 0, current: 0 });
   await room.save();
@@ -90,13 +80,13 @@ export async function joinRoom(socket, { roomCode }, callback) {
  */
 export async function startGame(roomCode) {
   const room = await Room.findOne({ roomCode });
-  if (!room) return null;
-  if (!room.started) {
-    room.started = true;
-    room.timerStart = new Date();
-    room.timerDuration = room.mode * 60;
-    await room.save();
-  }
+  if (!room || room.started) return room;
+
+  room.started = true;
+  room.timerStart = new Date();
+  room.timerDuration = room.mode * 60;
+  await room.save();
+
   return room;
 }
 
@@ -105,160 +95,93 @@ export async function startGame(roomCode) {
  */
 export async function getTimer(roomCode) {
   const room = await Room.findOne({ roomCode });
-  if (!room || !room.timerStart || !room.timerDuration)
-    return { timeLeft: null };
-  const elapsed = Math.floor(
-    (Date.now() - new Date(room.timerStart).getTime()) / 1000
-  );
-  const timeLeft = Math.max(room.timerDuration - elapsed, 0);
-  return { timeLeft };
+  if (!room?.timerStart) return { timeLeft: null };
+
+  const elapsed = Math.floor((Date.now() - room.timerStart) / 1000);
+  return { timeLeft: Math.max(room.timerDuration - elapsed, 0) };
 }
 
 /**
- * Submit answer (multiplayer)
- *
- * - Only advance player.current when answer is correct.
- * - Invoke callback with { correct, nextQuestion, score, currentQuestion, error }.
- * - Returns { room, advanced } where advanced === true when player's current advanced.
+ * Submit answer
  */
 export async function submitAnswer(socket, { answer }, callback) {
-  const roomCode = socket.data.roomCode;
-  const room = await Room.findOne({ roomCode });
-  if (!room) {
-    if (typeof callback === "function") callback({ error: "Room not found" });
-    return { room: null, advanced: false };
-  }
+  const room = await Room.findOne({ roomCode: socket.data.roomCode });
+  if (!room) return callback({ error: "Room not found" });
 
-  const player = room.players.find((p) => {
-    if (socket.data.userId && p.userId) {
-      try {
-        return String(p.userId) === String(socket.data.userId);
-      } catch {
-        return false;
-      }
-    }
-    return p.name === socket.data.name;
-  });
-  if (!player) {
-    if (typeof callback === "function") callback({ error: "Player not found in room" });
-    return { room: null, advanced: false };
-  }
+  const player = room.players.find(
+    (p) => String(p.userId) === String(socket.data.userId)
+  );
+  if (!player) return callback({ error: "Player not found" });
 
-  const idx = player.current;
+  const q = room.questions[player.current];
+  if (!q) return callback({ error: "No question" });
 
-  if (!room.questions || !room.questions[idx]) {
-    if (typeof callback === "function") {
-      callback({
-        correct: false,
-        error: "Invalid question index",
-        score: player.score || 0,
-        currentQuestion: player.current,
-      });
-    }
-    return { room, advanced: false };
-  }
-
-  const correct = Number(answer) === room.questions[idx].answer;
+  const correct = Number(answer) === q.answer;
   if (correct) {
-    player.score = (player.score || 0) + 1;
-    player.current = player.current + 1;
+    player.score++;
+    player.current++;
     await room.save();
-
-    if (typeof callback === "function") {
-      callback({
-        correct: true,
-        nextQuestion: room.questions[player.current]?.question,
-        score: player.score,
-        currentQuestion: player.current,
-      });
-    }
-    return { room, advanced: true };
-  } else {
-    // wrong answer -> do NOT advance. Do not persist.
-    if (typeof callback === "function") {
-      callback({
-        correct: false,
-        nextQuestion: room.questions[player.current]?.question,
-        score: player.score || 0,
-        currentQuestion: player.current,
-      });
-    }
-    return { room, advanced: false };
   }
+
+  callback({
+    correct,
+    score: player.score,
+    currentQuestion: player.current,
+    nextQuestion: room.questions[player.current]?.question,
+  });
+
+  return { room, advanced: correct };
 }
 
 /**
  * Disconnect handling
  */
 export const disconnectTimeouts = {};
+
 export async function disconnect(socket) {
-  const roomCode = socket.data.roomCode;
-  const name = socket.data.name;
-  const userId = socket.data.userId;
-  if (roomCode && (name || userId)) {
-    const key = roomCode + ":" + (userId || name);
-    disconnectTimeouts[key] = setTimeout(async () => {
-      const room = await Room.findOne({ roomCode });
-      if (!room) return null;
-      room.players = room.players.filter((p) => {
-        if (p.userId && userId) return p.userId.toString() !== userId.toString();
-        return p.name !== name;
-      });
-      if (room.players.length === 0) {
-        await Room.deleteOne({ roomCode });
-        return null;
-      } else {
-        await room.save();
-        return room;
-      }
-    }, 15000);
-  }
-  return null;
+  const { roomCode, userId, name } = socket.data;
+  if (!roomCode) return;
+
+  const key = `${roomCode}:${userId || name}`;
+  disconnectTimeouts[key] = setTimeout(async () => {
+    const room = await Room.findOne({ roomCode });
+    if (!room) return;
+
+    room.players = room.players.filter(
+      (p) => String(p.userId) !== String(userId)
+    );
+
+    if (room.players.length === 0) {
+      await Room.deleteOne({ roomCode });
+    } else {
+      await room.save();
+    }
+  }, 15000);
 }
 
 /**
- * Rejoin
+ * Rejoin room
  */
-export async function rejoinRoom(socket, { roomCode, name: providedName }, callback) {
-  let name = providedName || socket.data.user?.name || "Anonymous";
-  const userId = socket.data.user?.id || socket.data.user?.sub || null;
-
+export async function rejoinRoom(socket, { roomCode }, callback) {
   const room = await Room.findOne({ roomCode });
   if (!room) return callback({ error: "Room not found" });
 
   socket.join(roomCode);
   socket.data.roomCode = roomCode;
-  socket.data.name = name;
-  socket.data.userId = userId;
+  socket.data.userId = socket.data.user?.id;
+  socket.data.name = socket.data.user?.name;
 
-  const key = roomCode + ":" + (userId || name);
+  const key = `${roomCode}:${socket.data.userId}`;
   if (disconnectTimeouts[key]) {
     clearTimeout(disconnectTimeouts[key]);
     delete disconnectTimeouts[key];
-  }
-
-  const player = room.players.find(
-    (p) =>
-      (p.userId && userId && p.userId.toString() === userId.toString()) ||
-      p.name === name
-  );
-
-  let timeLeft = null;
-  if (room.timerStart && room.timerDuration) {
-    const elapsed = Math.floor(
-      (Date.now() - new Date(room.timerStart).getTime()) / 1000
-    );
-    timeLeft = Math.max(room.timerDuration - elapsed, 0);
   }
 
   callback({
     roomCode,
     players: room.players,
     questions: room.questions.map((q) => q.question),
-    mode: room.mode,
-    timeLeft,
     started: room.started,
-    playerState: player || null,
   });
 }
 
@@ -268,6 +191,7 @@ export async function rejoinRoom(socket, { roomCode, name: providedName }, callb
 export async function rematchRoom(roomCode) {
   const room = await Room.findOne({ roomCode });
   if (!room) return null;
+
   room.questions = generateQuestions(20);
   room.players.forEach((p) => {
     p.score = 0;
@@ -276,137 +200,7 @@ export async function rematchRoom(roomCode) {
   room.started = false;
   room.timerStart = null;
   room.timerDuration = null;
-  await room.save();
-  return room;
-}
-
-/**
- * ------------------------------------------
- * Single-player helpers (socket-friendly)
- * ------------------------------------------
- */
-
-export async function createSinglePlayerRoom(socket, { mode }, callback) {
-  let name = socket.data.user?.name || "Anonymous";
-  const userId = socket.data.user?.id || socket.data.user?.sub || null;
-
-  let roomCode;
-  let exists = true;
-  while (exists) {
-    roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    exists = await Room.exists({ roomCode });
-  }
-
-  const questions = generateQuestions(20);
-  const room = new Room({
-    roomCode,
-    mode,
-    questions,
-    players: [{ name, userId, score: 0, current: 0 }],
-    started: false,
-    timer: null,
-  });
 
   await room.save();
-  socket.join(roomCode);
-  socket.data.roomCode = roomCode;
-  socket.data.name = name;
-  socket.data.userId = userId;
-
-  callback({
-    roomCode,
-    players: room.players,
-    questions: room.questions.map((q) => q.question),
-    mode,
-  });
-
   return room;
-}
-
-export async function startSinglePlayerGame(roomCode) {
-  const room = await Room.findOne({ roomCode });
-  if (!room) return null;
-  room.started = true;
-  room.timerStart = new Date();
-  room.timerDuration = room.mode * 60;
-  await room.save();
-  return room;
-}
-
-export async function getSinglePlayerTimer(roomCode) {
-  const room = await Room.findOne({ roomCode });
-  if (!room || !room.timerStart || !room.timerDuration)
-    return { timeLeft: null };
-  const elapsed = Math.floor(
-    (Date.now() - new Date(room.timerStart).getTime()) / 1000
-  );
-  const timeLeft = Math.max(room.timerDuration - elapsed, 0);
-  return { timeLeft };
-}
-
-/**
- * submitSinglePlayerAnswer: same rule — advance only on correct
- * returns { room, advanced } and invokes callback
- */
-export async function submitSinglePlayerAnswer(socket, { answer }, callback) {
-  const roomCode = socket.data.roomCode;
-  const room = await Room.findOne({ roomCode });
-  if (!room) {
-    if (typeof callback === "function") callback({ error: "Room not found" });
-    return { room: null, advanced: false };
-  }
-
-  const player = room.players.find((p) => {
-    if (socket.data.userId && p.userId) {
-      try {
-        return String(p.userId) === String(socket.data.userId);
-      } catch {
-        return false;
-      }
-    }
-    return p.name === socket.data.name;
-  });
-  if (!player) {
-    if (typeof callback === "function") callback({ error: "Player not found in room" });
-    return { room: null, advanced: false };
-  }
-
-  const idx = player.current;
-  if (!room.questions || !room.questions[idx]) {
-    if (typeof callback === "function") {
-      callback({
-        correct: false,
-        error: "Invalid question index",
-        score: player.score || 0,
-        currentQuestion: player.current,
-      });
-    }
-    return { room, advanced: false };
-  }
-
-  const correct = Number(answer) === room.questions[idx].answer;
-  if (correct) {
-    player.score = (player.score || 0) + 1;
-    player.current = player.current + 1;
-    await room.save();
-    if (typeof callback === "function") {
-      callback({
-        correct: true,
-        nextQuestion: room.questions[player.current]?.question,
-        score: player.score,
-        currentQuestion: player.current,
-      });
-    }
-    return { room, advanced: true };
-  } else {
-    if (typeof callback === "function") {
-      callback({
-        correct: false,
-        nextQuestion: room.questions[player.current]?.question,
-        score: player.score || 0,
-        currentQuestion: player.current,
-      });
-    }
-    return { room, advanced: false };
-  }
 }

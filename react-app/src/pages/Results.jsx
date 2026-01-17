@@ -127,16 +127,22 @@ export default function Results() {
   const maxScore = winner ? winner.score : 0;
 
   const handleRematch = () => {
-    setRematchLoading(true);
-    setWaitingRematch(true);
-    socket.emit("rematch", {}, (res) => {
+  setRematchLoading(true);
+  setWaitingRematch(true);
+
+  socket.emit(
+    "rematch",
+    { name }, // 👈 IMPORTANT: explicitly send name
+    (res) => {
       if (res && res.error) {
         setRematchLoading(false);
         setWaitingRematch(false);
         alert(res.error);
       }
-    });
-  };
+    }
+  );
+};
+
 
   // Add WhatsApp share logic (beautiful text card)
   const getShareMessage = () => {
